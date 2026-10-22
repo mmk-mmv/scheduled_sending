@@ -8,7 +8,7 @@
   function list() { rcmail.http_post('plugin.scheduled_sending.queue_list', {}, rcmail.set_busy(true, 'loading')); }
   rcmail.addEventListener('init', function() {
     rcmail.register_command('plugin.scheduled_sending.open_queue', function() {
-      rcmail.goto_url('_task=mail&_action=plugin.scheduled_sending.queue');
+      rcmail.goto_url('mail/plugin.scheduled_sending.queue', {_framed:0});
     }, true);
     count();
     if (document.getElementById('ssq-root')) list();
