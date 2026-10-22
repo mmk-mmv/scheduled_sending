@@ -1,0 +1,52 @@
+name: Regression tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2', '8.3', '8.4', '8.5']
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: '1'
+          MARIADB_DATABASE: scheduled_sending_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, intl, pdo_mysql, openssl, dom
+          coverage: none
+          tools: composer:v2
+      - name: Validate package and PHP syntax
+        run: |
+          composer validate --strict --no-check-publish
+          git ls-files -z '*.php' '*.inc' '*.php.dist' | xargs -0 -n1 php -l
+      - name: Fetch pinned official Roundcube 1.6.19 parser
+        run: tests/fetch_roundcube.sh
+      - name: PHP delivery, queue authorization and MariaDB transaction regressions
+        env:
+          ROUNDCUBE_CORE: ${{ github.workspace }}/.cache/roundcube
+          TEST_MYSQL_DSN: mysql:host=127.0.0.1;port=3306;dbname=scheduled_sending_test
+        run: php tests/test_database.php
+      - name: Browser behavior and escaping regressions
+        run: |
+          node tests/test_compose.js
+          node tests/test_settings_queue.js
+          node tests/test_queue.js

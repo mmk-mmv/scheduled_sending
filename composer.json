@@ -1,27 +1,35 @@
 {
-  "name": "texxasrulez/scheduled_sending",
-  "description": "Roundcube plugin: Schedule to send emails at a later time.",
-  "homepage": "https://github.com/texxasrulez/scheduled_sending",
+  "name": "mmk-mmv/scheduled_sending",
+  "description": "Server-side scheduled delivery for Roundcube with a CLI worker, protected queue and regression tests.",
+  "homepage": "https://github.com/mmk-mmv/scheduled_sending",
   "type": "roundcube-plugin",
-  "license": "GPL-3.0",  
+  "license": "GPL-3.0-only",
   "support": {
-    "issues": "https://github.com/texxasrulez/scheduled_sending/issues",
-    "source": "https://github.com/texxasrulez/scheduled_sending"
+    "issues": "https://github.com/mmk-mmv/scheduled_sending/issues",
+    "source": "https://github.com/mmk-mmv/scheduled_sending"
   },
-    "authors": [
-        {
-            "name": "Gene Hawkins",
-            "email": "texxasrulez@yahoo.com",
-            "role": "Lead"
-        }
-    ],
+  "authors": [
+    {
+      "name": "Gene Hawkins",
+      "email": "texxasrulez@yahoo.com",
+      "role": "Original author"
+    },
+    {
+      "name": "Scheduled Sending contributors",
+      "role": "Fork maintainer"
+    }
+  ],
   "require": {
-    "php": ">=7.4"
+    "php": ">=8.1",
+    "ext-json": "*",
+    "ext-openssl": "*",
+    "ext-mbstring": "*",
+    "ext-pdo": "*"
   },
   "extra": {
     "roundcube": {
-      "min-version": "1.5.0",
-      "max-version": "2.99.99",
+      "min-version": "1.6.19",
+      "max-version": "1.6.99",
       "plugin": "scheduled_sending"
     }
   },

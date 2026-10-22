@@ -1,0 +1,8 @@
+.cache/
+/config.inc.php
+/vendor/
+*.log
+*.eml
+*.sql.gz
+.DS_Store
+/coverage/

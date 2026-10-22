@@ -1,79 +1,71 @@
-/**
- * Scheduled Sending: Queue viewer
- * Larry skin friendly; computes local times in browser
- */
+/* Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md. */
+/* Queue navigation and rendering. Read-only refresh; mutations wait for server confirmation. */
 (function() {
   if (!window.rcmail) return;
-
-  // Command to open queue page
+  function t(key) { return rcmail.gettext ? rcmail.gettext(key, 'scheduled_sending') : key; }
+  function esc(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); }
+  function count() { rcmail.http_post('plugin.scheduled_sending.queue_count', {}); }
+  function list() { rcmail.http_post('plugin.scheduled_sending.queue_list', {}, rcmail.set_busy(true, 'loading')); }
   rcmail.addEventListener('init', function() {
     rcmail.register_command('plugin.scheduled_sending.open_queue', function() {
       rcmail.goto_url('_task=mail&_action=plugin.scheduled_sending.queue');
     }, true);
+    count();
+    if (document.getElementById('ssq-root')) list();
+    window.setInterval(function() {
+      if (document.hidden) return;
+      count();
+      if (document.getElementById('ssq-root')) list();
+    }, 60000);
   });
-
-  // When queue template is loaded, fetch data
-  rcmail.addEventListener('init', function() {
-    if (rcmail.env && rcmail.env.action === 'plugin.scheduled_sending.queue') {
-      // Fetch
-      rcmail.http_post('plugin.scheduled_sending.queue_list', {}, rcmail.set_busy(true, 'loading'));
-    }
+  rcmail.addEventListener('plugin.scheduled_sending.queue_count', function(ev) {
+    var button = document.getElementById('scheduled-sending-menu');
+    if (!button) return;
+    var badge = button.querySelector('.scheduled-count');
+    var n = Math.max(0, Number(ev.count) || 0);
+    if (!n) { if (badge) badge.remove(); button.setAttribute('aria-label', t('scheduled_queue_title')); return; }
+    if (!badge) { badge = document.createElement('span'); badge.className = 'scheduled-count'; badge.setAttribute('aria-hidden', 'true'); button.appendChild(badge); }
+    badge.textContent = String(n);
+    button.setAttribute('aria-label', t('scheduled_queue_title') + ': ' + n);
   });
-
-  // Receive data
-  rcmail.addEventListener('plugin.scheduled_sending.queue_data', function(ev) {
+  rcmail.addEventListener('plugin.scheduled_sending.queue_changed', function() {
+    count();
+    if (document.getElementById('ssq-root')) list();
+  });
+  rcmail.addEventListener('plugin.scheduled_sending.queue_data', function(rows) {
     try {
-      var rows = ev;
-      if (!Array.isArray(rows)) rows = [];
       var root = document.getElementById('ssq-root');
       if (!root) return;
-
-      // Build table
-      function t(key) { return (rcmail.gettext ? rcmail.gettext(key, 'scheduled_sending') : key); }
-      var html = [];
-      html.push('<table class="ssq-table" role="grid">');
-      html.push('<thead><tr><th>'+t('id')+'</th><th>'+t('status')+'</th><th>'+t('local_time')+'</th><th>'+t('utc')+'</th><th>'+t('to')+'</th><th>'+t('subject')+'</th><th>'+t('actions')+'</th></tr></thead><tbody>');
+      rows = Array.isArray(rows) ? rows : [];
+      var html = '<table class="ssq-table"><thead><tr>';
+      ['id','status','local_time','to','subject','actions'].forEach(function(key) { html += '<th scope="col">' + esc(t(key)) + '</th>'; });
+      html += '</tr></thead><tbody>';
       rows.forEach(function(r) {
-        var dt = r.scheduled_ts ? new Date(r.scheduled_ts * 1000) : null;
-        function pad(n){return (n<10?'0':'')+n}
-        function fmt(dt){
-          try { return new Intl.DateTimeFormat(undefined,{month:'short',day:'2-digit',year:'numeric',hour:'numeric',minute:'2-digit'}).format(dt); }
-          catch(e){ var m=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dt.getMonth()]; return m+' '+pad(dt.getDate())+', '+dt.getFullYear()+' '+((dt.getHours()+11)%12+1)+':'+pad(dt.getMinutes())+' '+(dt.getHours()<12?'AM':'PM'); }
+        var id = Number(r.id);
+        if (!Number.isSafeInteger(id) || id < 1) return;
+        var time = r.scheduled_ts ? new Date(Number(r.scheduled_ts) * 1000).toLocaleString() : '';
+        var status = esc(t('status_' + r.status)) + (r.error ? '<small>' + esc(r.error) + '</small>' : '');
+        var actions = '<a class="ssq-download" href="' + esc(rcmail.url('plugin.scheduled_sending.queue_download', {_task:'mail',_id:id})) + '">' + esc(t('download_eml')) + '</a>';
+        if (r.status === 'queued' || r.status === 'retry_wait') {
+          actions += '<button type="button" class="button ssq-cancel" data-id="' + id + '">' + esc(t('cancel')) + '</button>';
+          actions += '<button type="button" class="button ssq-bump10" data-id="' + id + '">' + esc(t('bump10')) + '</button>';
         }
-        var local = dt ? fmt(dt) : '';
-        var utc = (r.scheduled_utc||'').replace(' ', '&nbsp;');
-        var actions = [];
-        if (r.status === 'queued' || r.status === 'processing') {
-          actions.push('<button class="button ssq-cancel" data-id="'+r.id+'">'+t('cancel')+'</button>');
-          actions.push('<button class="button ssq-bump10" data-id="'+r.id+'">'+t('bump10')+'</button>');
-        } else {
-          actions.push('<span class="quiet">'+t('not_applicable')+'</span>');
-        }
-        html.push('<tr data-id="'+r.id+'"><td>'+r.id+'</td><td>'+r.status+'</td><td>'+local+'</td><td>'+utc+'</td><td>'+ (r.to||'') +'</td><td>'+ (r.subj||'') +'</td><td>'+actions.join(' ')+'</td></tr>');
+        html += '<tr><td>' + id + '</td><td>' + status + '</td><td>' + esc(time) + '</td><td>' + esc(r.to || r.cc || r.bcc) + '</td><td>' + esc(r.subj) + '</td><td>' + actions + '</td></tr>';
       });
-      html.push('</tbody></table>');
-      if (!rows.length) html.push('<p class="ssq-empty">'+t('no_queued_messages')+'</p>');
-      root.innerHTML = html.join('');
-
-      root.onclick = function(e){
-        var t = e.target;
-        if (!t || !t.classList) return;
-        var id = t.getAttribute('data-id');
-        if (t.classList.contains('ssq-cancel')) {
-          rcmail.http_post('plugin.scheduled_sending.queue_cancel', {id:id}, rcmail.set_busy(true, 'loading'));
-          // refresh after short delay
-          setTimeout(function(){ rcmail.http_post('plugin.scheduled_sending.queue_list', {}); }, 400);
-        } else if (t.classList.contains('ssq-bump10')) {
-          // Add 10 minutes from now
-          var ts = Math.floor(Date.now()/1000) + 600;
-          rcmail.http_post('plugin.scheduled_sending.queue_reschedule', {id:id, at_ts: ts}, rcmail.set_busy(true, 'loading'));
-          setTimeout(function(){ rcmail.http_post('plugin.scheduled_sending.queue_list', {}); }, 400);
+      html += '</tbody></table>';
+      if (!rows.length) html = '<p>' + esc(t('no_queued_messages')) + '</p>';
+      root.innerHTML = html;
+      root.onclick = function(ev) {
+        var target = ev.target;
+        if (!target || !target.classList) return;
+        var id = Number(target.getAttribute('data-id'));
+        if (!Number.isSafeInteger(id) || id < 1) return;
+        if (target.classList.contains('ssq-cancel')) {
+          if (window.confirm(t('cancel') + '?')) rcmail.http_post('plugin.scheduled_sending.queue_cancel', {id:id,_token:rcmail.env.request_token}, rcmail.set_busy(true, 'loading'));
+        } else if (target.classList.contains('ssq-bump10')) {
+          rcmail.http_post('plugin.scheduled_sending.queue_reschedule', {id:id,at_ts:Math.floor(Date.now()/1000)+600,_token:rcmail.env.request_token}, rcmail.set_busy(true, 'loading'));
         }
       };
-    } catch(e) {
-      try { console.error(e); } catch(_) {}
-    } finally {
-      rcmail.set_busy(false);
-    }
+    } finally { rcmail.set_busy(false); }
   });
 })();

@@ -1,284 +1,88 @@
-# Scheduled Sending
+# Scheduled Sending for Roundcube
 
-![Downloads](https://img.shields.io/github/downloads/texxasrulez/scheduled_sending/total?style=plastic&logo=github&logoColor=white&label=Downloads&labelColor=aqua&color=blue)
-[![Packagist Downloads](https://img.shields.io/packagist/dt/texxasrulez/scheduled_sending?style=plastic&logo=packagist&logoColor=white&label=Downloads&labelColor=blue&color=gold)](https://packagist.org/packages/texxasrulez/scheduled_sending)
-[![Packagist Version](https://img.shields.io/packagist/v/texxasrulez/scheduled_sending?style=plastic&logo=packagist&logoColor=white&label=Version&labelColor=blue&color=limegreen)](https://packagist.org/packages/texxasrulez/scheduled_sending)
-[![Github License](https://img.shields.io/github/license/texxasrulez/scheduled_sending?style=plastic&logo=github&label=License&labelColor=blue&color=coral)](https://github.com/texxasrulez/scheduled_sending/LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/texxasrulez/scheduled_sending?style=plastic&logo=github&label=Stars&labelColor=blue&color=deepskyblue)](https://github.com/texxasrulez/scheduled_sending/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/texxasrulez/scheduled_sending?style=plastic&logo=github&label=Issues&labelColor=blue&color=aqua)](https://github.com/texxasrulez/scheduled_sending/issues)
-[![GitHub Contributors](https://img.shields.io/github/contributors/texxasrulez/scheduled_sending?style=plastic&logo=github&logoColor=white&label=Contributors&labelColor=blue&color=orchid)](https://github.com/texxasrulez/scheduled_sending/graphs/contributors)
-[![GitHub Forks](https://img.shields.io/github/forks/texxasrulez/scheduled_sending?style=plastic&logo=github&logoColor=white&label=Forks&labelColor=blue&color=darkorange)](https://github.com/texxasrulez/scheduled_sending/forks)
-[![Donate Paypal](https://img.shields.io/badge/Paypal-Money_Please!-blue.svg?style=plastic&labelColor=blue&color=forestgreen&logo=paypal)](https://www.paypal.me/texxasrulez)
+[![Regression tests](https://github.com/mmk-mmv/scheduled_sending/actions/workflows/ci.yml/badge.svg)](https://github.com/mmk-mmv/scheduled_sending/actions/workflows/ci.yml)
 
-Schedule messages to be transmitted when you want them to go, including messages with attachments.
+A maintained GPL-3.0 fork of [Gene Hawkins / texxasrulez's Scheduled Sending](https://github.com/texxasrulez/scheduled_sending). Schedule mail in Roundcube, then let a local CLI worker deliver it after the browser has closed.
 
-# Scheduled Sending — Installation Guide for Roundcube
+**1.4.0-beta.1 — preview release.** This fork changes delivery, credentials, queue actions and compose submission. Review the upgrade notes before deploying. Automated tests use transport doubles; they do not establish compatibility with every mail server, attachment plugin or custom skin.
 
-This plugin lets users **schedule emails to be sent later**. It includes a web UI, localization, and CLI helpers to trigger a **queue worker** that delivers messages when they’re due.
+## What changed
 
-This guide covers both **Composer-based** and **manual** installation, database setup, configuration, and setting up the worker trigger (cron/systemd).
+- Authenticated SMTP connection and captured, encrypted per-account SMTP/IMAP credentials, independent of the web session. No PHP `mail()` fallback or public HTTP worker.
+- Named/multiple recipients, quoted commas, Unicode display names, To/Cc/Bcc and Cc-only/Bcc-only messages. Bcc stays out of transmitted headers.
+- Compose body and attachments belong to the selected compose context. Missing attachments and oversized messages fail before scheduling.
+- One transaction and a unique request key prevent duplicate scheduling when a slow browser request is retried. The original request wins; a retry cannot overwrite it.
+- A taskbar queue with a count badge, local send time, visible failure reason and owner-scoped `.eml` download. Queued HTML is downloaded as an attachment, never rendered in the webmail origin.
+- Explicit owner, CSRF, ID and state checks for mutations. UI changes are confirmed only after a database change succeeds.
+- A database lock and atomic claim prevent concurrent workers from submitting the same job. Ambiguous SMTP failures and interrupted jobs stay held for investigation.
+- Temporary SMTP connection failures retry before submission, with bounded attempts. Sent-folder recovery retries IMAP only, never SMTP.
+- PHP, JavaScript and real MariaDB regression tests, with pinned official Roundcube parser sources.
 
----
+See [the review of all eight pre-existing forks](docs/FORK_REVIEW.md), [changelog](CHANGELOG.md) and [credits](CREDITS.md). Changes maintained by the fork contributors, 2026-10-23. Original Git history and license are retained.
 
-## 1) Requirements
-- Roundcube (modern version; plugin uses standard `rcube_plugin` API).
-- PHP compatible with your Roundcube (PHP 8.x recommended).
-- Database access for creating the plugin table.
-- Ability to run a periodic job (cron or systemd timer) to call the worker endpoint.
-- Web access to your Roundcube URL for the worker (or curl from cron).
+## Supported scope
 
----
+Roundcube **1.6.19 / 1.6.x**, MySQL or MariaDB **InnoDB**, PHP **8.1–8.5**, OpenSSL and mbstring. CI uses MariaDB 11.4 and the official Roundcube 1.6.19 parser. Elastic is the primary UI target; inherited Larry CSS remains, with the same shared JavaScript handler. Custom skins need their own browser verification. PostgreSQL/SQLite and Roundcube 1.7/2.x are not supported by this release.
 
-## 2) Install the plugin
+This implementation requires reusable password-based SMTP and IMAP authentication. OAuth refresh tokens, interactive MFA and passwordless login are not implemented. The worker also needs the same Roundcube configuration, encryption key, plugin dependencies and file access as the web application. Changing a mailbox password or the encryption key after scheduling can prevent delivery; the job is held visibly rather than silently sent through another transport.
 
-### Option A — Composer (preferred)
-1. Place the plugin in a VCS or local path that Composer can reference.
-2. Ensure your Roundcube root has the **Roundcube plugin installer** in `require` (most distros do):
+## Installation
 
-   ```json
-   "require": {
-     "roundcube/plugin-installer": "^0.3"
-   }
+1. Back up the plugin, Roundcube configuration and queue table. Put this repository at `ROUND CUBE ROOT/plugins/scheduled_sending` (the directory name must be exactly `scheduled_sending`). Keep code owned by the administrator; the web user needs read access, not write access to PHP sources.
+2. For a **new** installation, import [SQL/mysql.initial.sql](SQL/mysql.initial.sql) into the Roundcube database. Existing installations must retain their queue and verify the `dedupe_key` column with its **unique index**. Do not reimport the initial schema over an existing table.
+3. Copy `config.inc.php.dist` to `config.inc.php`. Adjust the display timezone and limits. The canonical table setting is `db_table_scheduled_sending`; a legacy `scheduled_sending_table` setting must agree if present.
+4. Add the plugin to the existing Roundcube plugin list, preserving other entries:
+
+   ```php
+   $config['plugins'] = array_values(array_unique(array_merge(
+       $config['plugins'] ?? [], ['scheduled_sending']
+   )));
    ```
 
-3. Add a repository that points to the plugin (adjust the path):
+5. Check [operations and upgrade notes](docs/OPERATIONS.md), then install a timer or cron job under the **Roundcube service account**, using the correct PHP CLI binary. Example invocation:
 
-   ```json
-   "repositories": [
-     { "type": "path", "url": "../scheduled_sending_composer" }
-   ],
-   "require": {
-     "texxasrulez/scheduled_sending": "*"
-   }
+   ```sh
+   /usr/bin/php /var/www/roundcube/plugins/scheduled_sending/bin/worker_cli.php
    ```
 
-4. Run:
-   ```bash
-   composer install
-   # or
-   composer require texxasrulez/scheduled_sending:*
-   ```
+   **This worker submits due messages.** Installation tests must use `tests/`, not the worker. [Example systemd files](examples/) require path/user adjustments before enabling.
 
-> Composer will install the plugin under `plugins/scheduled_sending` (per its `composer.json`).
+No public worker URL, webmail password in cron, worker token or HTTP TLS exception is required. `bin/scheduled_queue_worker.php` is a compatibility alias for the local worker; former HTTP worker actions return 403.
 
-### Option B — Manual install
-1. Unzip the plugin into Roundcube’s plugins directory:
-   ```bash
-   cd /path/to/roundcube
-   unzip /tmp/scheduled_sending.zip -d plugins/scheduled_sending
-   ```
-2. Ensure permissions match your web server user:
-   ```bash
-   chown -R www-data:www-data plugins/scheduled_sending (or tailor to your server's user:group)
-   find plugins/scheduled_sending -type d -exec chmod 755 {} \;
-   find plugins/scheduled_sending -type f -exec chmod 644 {} \;
-   ```
+### Plesk
 
----
+Plesk's bundled Roundcube can load plugins. Keep custom activation in Plesk's supported local configuration override, preserve its plugin list, and use the same PHP and service user as webmail. Common paths are `/usr/share/psa-roundcube`, `/etc/psa-webmail/roundcube/config.local.php` and `/opt/plesk/php/8.3/bin/php`; discover and verify the actual installation first. Package updates can replace bundled files, so retain this version in Git and verify the plugin and timer after an update. A separate custom Roundcube installation has separate configuration and is not changed by this setup.
 
-## 3) Database schema
+## Using the queue
 
-Create the queue table (MySQL/MariaDB):
+Compose a message, choose a future browser-local date/time and select **Send later**. The editor stays open on failure and leaves only after the queue transaction is confirmed. A pending request disables the button. Retrying the same compose operation resolves the original job; use a fresh compose operation to schedule an intentionally separate message.
 
-- File: `plugins/scheduled_sending/SQL/mysql.initial.sql`
-- SQL (for convenience):
+Open **Scheduled messages** in the taskbar or Settings. The badge includes queued, retrying, processing and held/problem jobs, not only mail waiting for its time. The queue page lists up to 200 active/problem rows. Cancel or postpone a waiting job; download the queued `.eml` to inspect it locally. Error details explain held jobs. Processing, completed and Sent-copy-recovery jobs cannot be requeued or deleted through these actions; held errors cannot be rescheduled. Cancellation retains the payload until explicitly deleted.
 
-```sql
-CREATE TABLE `scheduled_queue` (
-  `id` bigint(20) UNSIGNED NOT NULL,
-  `user_id` bigint(20) UNSIGNED NOT NULL,
-  `identity_id` bigint(20) UNSIGNED NOT NULL DEFAULT 0,
-  `scheduled_at` datetime NOT NULL,
-  `status` varchar(16) NOT NULL DEFAULT 'queued',
-  `raw_mime` mediumtext DEFAULT NULL,
-  `meta_json` text DEFAULT NULL,
-  `dedupe_key` varchar(64) DEFAULT NULL,
-  `last_error` text DEFAULT NULL,
-  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+The queue page uses browser-local time. Preferences and confirmation messages use `scheduled_timezone`; database schedule values are UTC. A normal timer tick runs once a minute, so the selected time is the earliest eligible time, not a promise of delivery at an exact second.
 
-ALTER TABLE `scheduled_queue`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `uq_scheduled_dedupe` (`dedupe_key`),
-  ADD KEY `idx_sched_at` (`scheduled_at`),
-  ADD KEY `idx_status` (`status`);
+## Verification without sending mail
 
-ALTER TABLE `scheduled_queue`
-  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
-COMMIT;
+```sh
+tests/fetch_roundcube.sh
+ROUNDCUBE_CORE="$PWD/.cache/roundcube" php tests/test_reliability.php
+node tests/test_compose.js
+node tests/test_settings_queue.js
+node tests/test_queue.js
 ```
 
-> If you use a database other than MySQL/MariaDB, adapt the SQL accordingly.
+The fetch script pins the official Roundcube commit and verifies its archive SHA-256. Test SMTP/IMAP classes are local doubles; no production configuration or mailbox is bootstrapped. For real SQL ownership/transaction tests, use a disposable database named **exactly `scheduled_sending_test`**:
 
----
-
-## 4) Configuration
-
-Copy the example config and edit it:
-
-```bash
-cd plugins/scheduled_sending
-cp config.inc.php.dist config.inc.php
+```sh
+ROUNDCUBE_CORE="$PWD/.cache/roundcube" \
+TEST_MYSQL_DSN='mysql:host=127.0.0.1;port=3306;dbname=scheduled_sending_test' \
+TEST_MYSQL_USER=root TEST_MYSQL_PASSWORD='' php tests/test_database.php
 ```
 
-Key options (from `config.inc.php.dist`):
+**The database test drops/recreates `scheduled_queue` in that test database.** It refuses any other database name. Its transport classes remain test doubles. CI runs this suite across the PHP matrix.
 
-```php
-$config['scheduled_sending_table']       = 'scheduled_queue';
-$config['scheduled_worker_batch']        = 20;
-$config['scheduled_timezone']            = 'America/Chicago'; // optional; storage is UTC
-$config['scheduled_sending_logging']     = false; // plugin log entries
-$config['scheduled_debug']               = false;
-$config['scheduled_force_plugin_assets'] = false;
-$config['scheduled_show_fab']            = true;
+For an installed server, `bin/healthcheck_cli.php` reads queue health without changing messages. Its optional `--check-auth` performs SMTP/IMAP login/logout, with no SMTP MAIL/RCPT/DATA and no IMAP message writes. It is not an end-to-end delivery test. See [security](SECURITY.md) before sharing diagnostics.
 
-$config['scheduled_sending_worker_token'] = '32_character_key';
-$config['scheduled_sending_delivery']     = 'smtp';  // 'smtp', 'mail', or 'none' for dry-run
-$config['scheduled_sending_batch']        = 25;      // optional
-$config['scheduled_sending_sent_folder']  = 'Sent';  // optional
+## License
 
-$config['db_table_scheduled_sending']     = 'scheduled_queue';
-
-$config['scheduled_sending_lock_key']     = 'scheduled_sending_worker';
-$config['scheduled_sending_lock_timeout'] = 10; // seconds
-```
-
-**Important: set a strong** `scheduled_sending_worker_token` (32+ random characters).
-
-Set `scheduled_sending_logging` to `true` to write normal plugin and worker entries to the `scheduled_sending` Roundcube log. Set `scheduled_debug` to `true` only when you need the more detailed diagnostic trace written to `scheduled_sending_debug`.
-
-When `scheduled_sending_delivery` is `smtp`, scheduled rows store the scheduling user's SMTP username and encrypted SMTP password in `meta_json` when available. This lets the worker send later with the same Roundcube SMTP credentials in multi-user installations.
-
----
-
-## 5) Enable the plugin in Roundcube
-
-Edit your Roundcube main config (e.g. `config/config.inc.php`) and add the plugin name:
-
-```php
-// Add 'scheduled_sending' to the plugins array
-$config['plugins'] = array_merge($config['plugins'] ?? [], ['scheduled_sending']);
-```
-
-Clear Roundcube caches if needed (e.g., remove `temp/*` & `cache/*` contents, keeping the dirs).
-
----
-
-## 6) Queue worker — how delivery is triggered
-
-The plugin exposes an **HTTP worker action** that sends all messages scheduled at or before “now”. The worker requires the token from your `config.inc.php`.
-
-**Worker URL shape:**
-
-```
-https://YOUR-ROUNDCUBE-BASE/?_task=login&_action=plugin.scheduled_sending.worker&_token=32_character_key
-```
-
-There are two convenient ways to call it periodically:
-
-### A) Via provided CLI helper (recommended)
-
-- `bin/scheduled_queue_worker.php` makes an HTTP request to the worker URL.
-- `bin/scheduled_send.php` is a shim that requires the worker script.
-
-**Examples:**
-
-```bash
-# Using CLI flags
-php plugins/scheduled_sending/bin/scheduled_queue_worker.php   --url="https://mail.example.com/roundcube/"   --token="32_character_key"
-
-# Or via environment variables
-SS_WORKER_URL="https://mail.example.com/roundcube/" SS_WORKER_TOKEN="32_character_key" php plugins/scheduled_sending/bin/scheduled_queue_worker.php
-```
-
-**Cron:** run once per minute (or every 5 minutes if your use-case is lax):
-
-```cron
-* * * * * SS_WORKER_URL="https://mail.example.com/roundcube/" SS_WORKER_TOKEN="32_character_key"     php /var/www/roundcube/plugins/scheduled_sending/bin/scheduled_queue_worker.php >> /var/log/roundcube/scheduled_worker.log 2>&1
-```
-
-### B) Direct HTTP call (curl/wget)
-
-```bash
-curl -fsS "https://mail.example.com/roundcube/?_task=login&_action=plugin.scheduled_sending.worker&_token=32_character_key"
-```
-
-Cron variant:
-
-```cron
-* * * * * curl -fsS "https://mail.example.com/roundcube/?_task=login&_action=plugin.scheduled_sending.worker&_token=32_character_key" >> /var/log/roundcube/scheduled_worker.log 2>&1
-```
-
-> The worker is idempotent and gated by a lock (`scheduled_sending_lock_key` / timeout) to avoid overlap.
-
----
-
-## 7) Verifying
-
-1. Log in to Roundcube, compose a message, pick a **future time**, and schedule.
-2. Confirm a row is added to the `scheduled_queue` table.
-3. Ensure your cron/systemd job runs; the message should send at/after the scheduled time.
-4. Check logs:
-   - Web server access/error logs
-   - `logs/` or a dedicated log (the plugin writes via `rcube::write_log('scheduled_sending', ...)` when `scheduled_sending_logging` is enabled)
-5. Confirm sent messages land in the configured **Sent** folder (if set).
-
----
-
-## 8) Troubleshooting
-
-- **401/403 on worker call**: bad or missing `_token`. Verify `scheduled_sending_worker_token` matches the value you pass.
-- **Nothing gets sent**: verify the cron is running and the URL points to your Roundcube base. Check that due items exist in `scheduled_queue` and `status` is `queued`.
-- **Timezones**: UI may use `scheduled_timezone`; storage is UTC. Ensure your server clock is correct (NTP) and PHP `date.timezone` is set.
-- **Mail transport**: `scheduled_sending_delivery` uses Roundcube’s SMTP by default. If using `mail` or a relay, ensure it’s configured correctly in Roundcube.
-- **SMTP credentials**: queued SMTP messages rely on the encrypted credential values captured in `meta_json` at schedule time. If a user changes their SMTP password before the worker runs, reschedule the message.
-- **Locks**: if you see messages about an active lock, either reduce the cron frequency or increase `scheduled_sending_lock_timeout`.
-
----
-
-## 9) Uninstall
-
-- Remove the plugin folder or uninstall via Composer.
-- Optionally drop the table:
-  ```sql
-  DROP TABLE IF EXISTS `scheduled_queue`;
-  ```
-
----
-
-## 10) File map (high-level)
-
-- `scheduled_sending.php` — main plugin class (registers actions/UI)
-- `config.inc.php.dist` — example configuration
-- `SQL/mysql.initial.sql` — schema for the queue table
-- `bin/scheduled_queue_worker.php` — CLI helper (HTTP to worker)
-- `bin/scheduled_send.php` — thin wrapper including the worker helper
-- `templates/` — Roundcube templates for UI
-- `localization/` — i18n strings
-- `skins/` / `js/` — assets
-
----
-
-**That’s it.** Once the table exists, the config is set (especially `_token`), and the cron/systemd job is running, scheduled emails will go out on time.
-
-Enjoy!
-
-:moneybag: **Donations** :moneybag:
-
-If you use this plugin and would like to show your appreciation by buying me a cup of coffee, I surely would appreciate it. A regular cup of Joe is sufficient, but a Starbucks Coffee would be better ... \
-Zelle (Zelle is integrated within many major banks Mobile Apps by default) - Just send to texxasrulez at yahoo dot com \
-No Zelle in your banks mobile app, no problem, just click [Paypal](https://paypal.me/texxasrulez?locale.x=en_US) and I can make a Starbucks run ...
-
-I appreciate the interest in this plugin and hope all the best ...
-
-## Versioning
-- `scheduled_sending` now keeps its canonical version in `scheduled_sending::PLUGIN_VERSION` inside `scheduled_sending.php`.
-- `scheduled_sending::info()` exposes the plugin metadata array used for self-identification.
-- Development builds should use a `+dev` suffix such as `1.0.0+dev`.
-- Release builds should use a clean tagged version such as `1.0.0`.
-
-For a release bump:
-1. Update `scheduled_sending::PLUGIN_VERSION` in `scheduled_sending.php` or run `sh scripts/bump-version.sh 1.0.0`.
-2. Update `CHANGELOG.md`.
-3. Create the matching release tag after verification.
+[GNU GPL version 3](LICENSE). You may use, modify and publish a fork under its terms. Preserve license/copyright notices, identify changed files and dates, and provide corresponding source when distributing the software. Archiving the upstream repository does not cancel that license. This fork is independent and does not imply endorsement by the original author.

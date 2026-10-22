@@ -1,4 +1,5 @@
 <?php
+// Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md.
 $labels = array();
 $labels['scheduled_queue_title'] = 'Scheduled messages';
 $labels['queue_cancel_ok'] = 'Canceled';
@@ -30,4 +31,19 @@ $labels['compose_form_not_ready'] = 'Compose form not ready';
 $labels['reschedule_prompt'] = 'Enter new send time (YYYY-MM-DD HH:MM, your local time):';
 $labels['reschedule_invalid'] = 'Could not parse date/time. Use YYYY-MM-DD HH:MM format.';
 $labels['reschedule_future'] = 'New time must be in the future.';
-?>
+
+
+$labels['queue_access_denied'] = 'Please sign in to view scheduled messages.';
+$labels['queue_invalid_request'] = 'The request could not be verified. Please reload and try again.';
+$labels['queue_change_failed'] = 'The message could not be changed. It may already be processing or no longer available.';
+$labels['queue_read_failed'] = 'The scheduled messages could not be loaded.';
+$labels['queue_delete_ok'] = 'Scheduled message deleted.';
+$labels['download_eml'] = 'Download message (.eml)';
+$labels['already_scheduled'] = 'This compose request is already scheduled. Review it in Scheduled messages.';
+$labels['status_queued'] = 'Scheduled';
+$labels['status_retry_wait'] = 'Waiting for mail server';
+$labels['status_processing'] = 'Processing';
+$labels['status_error'] = 'Held for review';
+$labels['status_sent_copy_error'] = 'Sent; filing pending';
+$labels['recipient_prompt'] = 'Recipient email address:';
+$labels['recipient_required'] = 'At least one valid recipient is required.';

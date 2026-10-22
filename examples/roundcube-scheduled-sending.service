@@ -1,0 +1,19 @@
+# EXAMPLE: adapt user, PHP, Roundcube, temp and log paths before installing.
+[Unit]
+Description=Roundcube scheduled sending worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/roundcube
+ExecStart=/usr/bin/php /var/www/roundcube/plugins/scheduled_sending/bin/worker_cli.php
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/roundcube/logs /var/www/roundcube/temp

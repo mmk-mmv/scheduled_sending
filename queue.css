@@ -1,0 +1,10 @@
+/* Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md. */
+#taskmenu .scheduled_sending::before { content: "\f017"; }
+.scheduled-count { display: inline-block; min-width: 1.4em; margin-inline-start: .35em; padding: 0 .3em; border-radius: 1em; color: #fff; background: #465c73; font-size: .8em; font-variant-numeric: tabular-nums; }
+.ssq-content { padding: 1rem; overflow: auto; }
+.ssq-content h1 { font-size: 1.3rem; margin-block: 0 1rem; }
+.ssq-table { width: 100%; border-collapse: collapse; }
+.ssq-table th, .ssq-table td { padding: .6rem; border-bottom: 1px solid #aaa6; text-align: start; vertical-align: top; overflow-wrap: anywhere; }
+.ssq-table button, .ssq-table .ssq-download { margin: .15rem; }
+.ssq-table small { display: block; max-width: 28rem; }
+@media (max-width: 640px) { .ssq-table { min-width: 45rem; } }

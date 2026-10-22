@@ -1,320 +1,197 @@
 <?php
-if (!function_exists('ss_config_bool')) {
-    function ss_config_bool($value)
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_int($value)) {
-            return $value !== 0;
-        }
-
-        if (is_string($value)) {
-            $value = strtolower(trim($value));
-
-            if ($value === '' || in_array($value, array('0', 'false', 'off', 'no'), true)) {
-                return false;
-            }
-
-            if (in_array($value, array('1', 'true', 'on', 'yes'), true)) {
-                return true;
-            }
-        }
-
-        return (bool) $value;
-    }
+// Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md.
+// Local compatibility fixes for scheduled_sending 1.3.2, Roundcube 1.6 / Plesk.
+function ss_config_bool($value)
+{
+    return filter_var($value, FILTER_VALIDATE_BOOLEAN);
 }
 
-// helper to respect scheduled_debug
-if (!function_exists('ss_debug')) {
-    function ss_debug($payload) {
+class scheduled_sending_connection_retry extends RuntimeException {}
+
+trait scheduled_sending_worker_trait
+{
+    private function mm_capture_credentials()
+    {
+        $rc = $this->rc;
+        $cfg = $rc->config;
+        $login = (string) $rc->get_user_name();
+        $password = (string) $rc->get_user_password();
+        $storage_host = (string) ($_SESSION['storage_host'] ?? '');
+        if (!$rc->user || !(int) $rc->user->ID || $login === '' || $password === '' || $storage_host === '') {
+            throw new RuntimeException('No authenticated mail session');
+        }
+        $host = $cfg->get('smtp_host', 'localhost:587');
+        if (is_array($host)) $host = $host[$storage_host] ?? '';
+        $host = rcube_utils::parse_host((string) $host);
+        if (!$host || strpos($host, '%') !== false) throw new RuntimeException('Unresolved SMTP host');
+        $user = strtr((string) $cfg->get('smtp_user', '%u'), ['%u' => $login]);
+        if (strpos($user, '%') !== false) throw new RuntimeException('Unsupported SMTP username placeholder');
+        $pass = $cfg->get('smtp_pass', '%p');
+        $pass = $pass === '%p' ? $password : (string) $pass;
+        $encrypted = $rc->encrypt($pass);
+        $imap_encrypted = $rc->encrypt($password);
+        if (($pass !== '' && !$encrypted) || !$imap_encrypted) throw new RuntimeException('Encryption failed');
+        return [
+            'smtp_host' => $host, 'smtp_user' => $user, 'smtp_pass_enc' => $encrypted,
+            'imap_host' => $storage_host, 'imap_user' => $login, 'imap_pass_enc' => $imap_encrypted,
+            'imap_port' => (int) ($_SESSION['storage_port'] ?? 143),
+            'imap_ssl' => $_SESSION['storage_ssl'] ?? null,
+            'sent_mbox' => $cfg->get('sent_mbox', 'Sent'),
+            'drafts_mbox' => $cfg->get('drafts_mbox', 'Drafts'),
+        ];
+    }
+
+    public function run_cli_worker()
+    {
+        if (PHP_SAPI !== 'cli') throw new RuntimeException('CLI only');
+        $this->rc = rcmail::get_instance();
+        $this->load_config();
+        return $this->run_send_due_worker();
+    }
+
+    private function mm_addresses($value)
+    {
+        return array_values(array_filter(
+            rcube_mime::decode_address_list((string) $value, null, false, null, true),
+            static function ($address) { return filter_var($address, FILTER_VALIDATE_EMAIL) !== false; }
+        ));
+    }
+
+    private function mm_clean_credentials($meta)
+    {
+        unset($meta['smtp_pass_enc'], $meta['imap_pass_enc']);
+        return json_encode($meta, JSON_THROW_ON_ERROR);
+    }
+
+    private function mm_save_sent($meta, $raw)
+    {
+        $imap = new rcube_imap();
         try {
-            $rc = rcmail::get_instance();
-            if ($rc && ss_config_bool($rc->config->get('scheduled_debug', false)) && function_exists('write_log')) {
-                if (!is_scalar($payload)) {
-                    $payload = json_encode($payload);
-                }
-                write_log('scheduled_sending_debug', $payload);
+            $imap->set_options([
+                'socket_options' => $this->rc->config->get('imap_conn_options', []),
+                'timeout' => 30,
+            ]);
+            $password = $this->rc->decrypt($meta['imap_pass_enc'] ?? '');
+            if (!is_string($password) || $password === '') throw new RuntimeException('IMAP credentials unavailable');
+            if (!$imap->connect($meta['imap_host'], $meta['imap_user'], $password, (int) $meta['imap_port'], $meta['imap_ssl'] ?? null)) throw new RuntimeException('IMAP authentication failed');
+            $sent = $meta['sent_mbox'] ?? 'Sent';
+            if ($sent) {
+                if (!$imap->folder_exists($sent) && !$imap->create_folder($sent, true)) throw new RuntimeException('Sent folder unavailable');
+                preg_match('/^Message-ID:\s*(.+)$/mi', $raw, $match);
+                $message_id = trim($match[1] ?? '');
+                if ($message_id === '') throw new RuntimeException('Message-ID unavailable for Sent copy');
+                $existing = $imap->search($sent, 'HEADER Message-ID "' . addcslashes($message_id, '\\"') . '"', 'UTF-8');
+                if (!$existing || $existing->is_error()) throw new RuntimeException('Sent search failed');
+                if (!$existing->count() && !$imap->save_message($sent, $raw, '', false, ['SEEN'])) throw new RuntimeException('Sent append failed');
             }
-        } catch (Exception $e) {
-            // Never let logging explode the worker.
+            if (!empty($meta['draft_uid']) && !empty($meta['drafts_mbox'])) $imap->delete_message((int) $meta['draft_uid'], $meta['drafts_mbox']);
+        } finally {
+            $imap->close();
         }
-    }
-}
-// Worker include for Scheduled Sending
-// Processes due messages with duplicate-send protection and retry/backoff.
-
-trait scheduled_sending_worker_trait {
-    private function ss_sanitize_envelope_from($value)
-    {
-        $value = (string) $value;
-        if (preg_match('/<([^>]+)>/', $value, $mm)) {
-            $value = $mm[1];
-        }
-
-        $value = trim($value);
-        if ($value === '' || preg_match('/[\r\n]/', $value)) {
-            return '';
-        }
-
-        return filter_var($value, FILTER_VALIDATE_EMAIL) ? $value : '';
     }
 
     private function run_send_due_worker()
     {
-        $rc  = $this->rc;
-        $cfg = $rc->config;
-        $db  = $rc->get_dbh();
-
-        $table   = $cfg->get('db_table_scheduled_sending', 'scheduled_queue');
-        $batch   = (int)$cfg->get('scheduled_sending_batch', 25);
-        if ($batch < 1) $batch = 25;
-        $delivery = $cfg->get('scheduled_sending_delivery', 'smtp'); // 'smtp' | 'mail' | 'none'
-        $this->log('worker start', array('delivery'=>$delivery,'batch'=>$batch));
-
-        // Pick due rows in UTC
-        $batch_int = (int)$batch; if ($batch_int < 1) $batch_int = 25;
-$sql = "SELECT id, user_id, identity_id, scheduled_at, raw_mime, meta_json, status
-                  FROM " . $table . "
-                 WHERE status='queued' AND scheduled_at <= UTC_TIMESTAMP()
-                 ORDER BY scheduled_at ASC
-                 LIMIT " . $batch_int;
-$res = $db->query($sql);if (!$res) {
-            $this->log('worker scan', array('time'=>gmdate('c'), 'count'=>0));
-            return array('ok'=>true, 'count'=>0);
-        }
-
-        $rows = array();
-        while ($arr = $db->fetch_assoc($res)) $rows[] = $arr;
-        $this->log('worker scan', array('time'=>gmdate('c'), 'count'=>count($rows)));
-        if (!count($rows)) return array('ok'=>true,'count'=>0);
-
-        $processed = 0; $sent_ok = 0; $failed = 0; $last_err = null;
-        foreach ($rows as $row) {
-            $id = (int)$row['id'];
-
-            // Flip to 'sending' so we don't repick in parallel
-            $pick = $db->query("UPDATE $table SET status='sending', updated_at=UTC_TIMESTAMP() WHERE id=? AND status='queued'", $id);
-            if ($db->affected_rows($pick) < 1) {
-                $this->log('worker skip', array('id'=>$id,'reason'=>'status_changed'));
-                continue;
-            }
-            $this->log('worker pick', array('id'=>$id));
-
-            $raw = $row['raw_mime'];
-            $meta = array();
-            if (!empty($row['meta_json'])) {
-                $tmp = json_decode($row['meta_json'], true);
-                if (is_array($tmp)) $meta = $tmp;
-            }
-
-            // Split raw into headers/body
-            $parts = preg_split("/\r?\n\r?\n/", $raw, 2);
-            $raw_headers = isset($parts[0]) ? $parts[0] : '';
-            $raw_body    = isset($parts[1]) ? $parts[1] : '';
-
-            // Parse headers with unfolding (handles multi-line/continued headers per RFC 5322)
-            $headers_arr = array();
-            $current = '';
-            foreach (preg_split("/\r?\n/", $raw_headers) as $line) {
-                if ($line === '') continue;
-                if ($line[0] === ' ' || $line[0] === "\t") {
-                    // continuation
-                    $current .= ' ' . trim($line);
-                } else {
-                    if ($current !== '') {
-                        if (preg_match('/^([A-Za-z0-9\-]+):\s*(.*)$/', $current, $mm)) {
-                            $name = $mm[1]; $value = $mm[2];
-                            if (isset($headers_arr[$name])) $headers_arr[$name] .= ', ' . $value;
-                            else $headers_arr[$name] = $value;
-                        }
-                    }
-                    $current = $line;
-                }
-            }
-            if ($current !== '') {
-                if (preg_match('/^([A-Za-z0-9\-]+):\s*(.*)$/', $current, $mm)) {
-                    $name = $mm[1]; $value = $mm[2];
-                    if (isset($headers_arr[$name])) $headers_arr[$name] .= ', ' . $value;
-                    else $headers_arr[$name] = $value;
-                }
-            }
-
-            // Envelope sender
-            $env_from = isset($headers_arr['From']) ? $this->ss_sanitize_envelope_from($headers_arr['From']) : '';
-
-            // Recipients from headers
-            $to  = isset($headers_arr['To'])  ? $headers_arr['To']  : '';
-            $cc  = isset($headers_arr['Cc'])  ? $headers_arr['Cc']  : '';
-            $bcc = isset($headers_arr['Bcc']) ? $headers_arr['Bcc'] : '';
-            $rcpts_hdr = array();
-            foreach (array($to, $cc, $bcc) as $_list) {
-                if (!$_list) continue;
-                foreach (preg_split('/\s*,\s*/', $_list) as $_addr) {
-                    $_addr = trim($_addr);
-                    if ($_addr === '') continue;
-                    if (preg_match('/<([^>]+)>/', $_addr, $mm)) $_addr = $mm[1];
-                    if (strpos($_addr, '@') !== false) $rcpts_hdr[] = $_addr;
-                }
-            }
-
-            // Recipients from meta_json fallback
-            $rcpts_meta = array();
-            if (!empty($meta) && is_array($meta)) {
-                foreach (array('to','cc','bcc') as $_k) {
-                    if (!empty($meta[$_k])) {
-                        foreach (preg_split('/\s*,\s*/', $meta[$_k]) as $_addr) {
-                            $_addr = trim($_addr);
-                            if ($_addr === '') continue;
-                            if (preg_match('/<([^>]+)>/', $_addr, $mm)) $_addr = $mm[1];
-                            if (strpos($_addr, '@') !== false) $rcpts_meta[] = $_addr;
-                        }
-                    }
-                }
-            }
-
-            $rcpts_all = array_values(array_unique(array_merge($rcpts_hdr, $rcpts_meta)));
-
-            // Ensure required headers
-            if (empty($headers_arr['Date'])) {
-                $headers_arr['Date'] = gmdate('D, d M Y H:i:s').' +0000';
-                $headers_arr['X-SS-Patched-Date'] = '1';
-            }
-            if (empty($headers_arr['Message-ID']) && !empty($env_from)) {
-                $dom = substr(strrchr($env_from, '@'), 1);
-                if (!$dom) $dom = 'localhost';
-                $headers_arr['Message-ID'] = '<ss-'.bin2hex(random_bytes(8)).'@'.$dom.'>';
-            }
-
-            // Remove Bcc header for on-the-wire message
-            if (isset($headers_arr['Bcc'])) unset($headers_arr['Bcc']);
-
-            $ok = false;
-            $err = '';
-
-            try {
-                if ($delivery === 'smtp' && class_exists('rcube_smtp')) {
-                    $smtp = new rcube_smtp($rc->config);
-                    if (method_exists($smtp, 'send_mail')) {
-                        if (empty($rcpts_all)) { $ok = false; $err = 'no recipients found'; }
-                        else {
-                            if (!$env_from) $env_from = isset($headers_arr['From']) ? $this->ss_sanitize_envelope_from($headers_arr['From']) : '';
-                            if (!$env_from) { $ok = false; $err = 'no envelope sender'; }
-                            if (!$env_from) $env_from = 'mailer-daemon@localhost';
-                            $ok = $smtp->send_mail($env_from, $rcpts_all, $headers_arr, $raw_body);
-                        }
-                    } elseif (method_exists($smtp, 'send_message')) {
-                        $ok = $smtp->send_message($env_from, $rcpts_all, $raw);
-                    } else {
-                        $ok = false;
-                        $err = 'rcube_smtp: no send_* method';
-                    }
-                    if (!$ok && method_exists($smtp, 'get_error')) {
-                        $e = $smtp->get_error();
-                        if ($e) $err = json_encode($e);
-                    }
-                
-                    if (!$ok && empty($err)) { $err = 'smtp send_mail returned false'; }
-
-                if (!$ok) {
-                    $prev_err = $err;
-                    // SMTP failed: try PHP mail() as a fallback
-                    $to_hdr = isset($headers_arr['To']) ? $headers_arr['To'] : (count($rcpts_all) ? implode(', ', $rcpts_all) : '');
-                    $subject = isset($headers_arr['Subject']) ? $headers_arr['Subject'] : '(no subject)';
-                    $hdr_arr = $headers_arr;
-                    unset($hdr_arr['To'], $hdr_arr['Subject'], $hdr_arr['Bcc']);
-                    $hdr_lines = array();
-                    foreach ($hdr_arr as $k=>$v) $hdr_lines[] = $k.': '.$v;
-                    $hdr_str = implode("\r\n", $hdr_lines);
-                    $mail_env_from = $this->ss_sanitize_envelope_from($env_from);
-                    $php_opts = $mail_env_from !== '' ? '-f' . $mail_env_from : '';
-                    $ok = mail($to_hdr, $subject, $raw_body, $hdr_str, $php_opts);
-                    if ($ok) {
-                        $err = '';
-                        $this->log('fallback mail() sent', array('id'=>$id));
-                    } else {
-                        if (empty($prev_err)) $prev_err = 'smtp send_mail returned false';
-                        $err = 'smtp failed; mail() also failed: ' . $prev_err;
-                    }
-                }
-} elseif ($delivery === 'mail' || $delivery === 'none' || !class_exists('rcube_smtp')) {
-                    $this->log('mail attempt', array('id'=>$id,'delivery'=>$delivery,'have_smtp'=>class_exists('rcube_smtp')));
-                    if ($delivery === 'none') {
-                        $ok = true; // dry-run
-                    } else {
-                        // Basic mail() fallback
-                        $to_hdr = isset($headers_arr['To']) ? $headers_arr['To'] : '';
-                        $subject = isset($headers_arr['Subject']) ? $headers_arr['Subject'] : '';
-                        // Build headers string (without To/Subject/Bcc)
-                        unset($headers_arr['To'], $headers_arr['Subject'], $headers_arr['Bcc']);
-                        $hdr_lines = array();
-                        foreach ($headers_arr as $k=>$v) $hdr_lines[] = $k.': '.$v;
-                        $hdr_str = implode("\r\n", $hdr_lines);
-                        $mail_env_from = $this->ss_sanitize_envelope_from($env_from);
-                        $php_opts = $mail_env_from !== '' ? '-f' . $mail_env_from : '';
-                        $ok = mail($to_hdr, $subject, $raw_body, $hdr_str, $php_opts);
-                        if (!$ok) $err = 'mail() returned false'; else if (empty($err)) { $err = 'mail() returned false (no details)'; }
-                    }
-                }
-            } catch (Exception $ex) {
-                $ok = false; $err = $ex->getMessage();
-            }
-
-            $processed++; if ($ok) {
-
-
-                // IMAP append to Sent and remove Drafts copy
+        $rc = $this->rc;
+        $db = $rc->get_dbh();
+        $table = $this->ss_queue_table();
+        $lock_key = 'scheduled_sending_' . substr(hash('sha256', $table), 0, 32);
+        $lock = $db->query('SELECT GET_LOCK(?, 0) AS acquired', $lock_key);
+        if (!$lock || $db->is_error()) throw new RuntimeException('Queue lock failed');
+        $locked = $db->fetch_assoc($lock);
+        if (!$locked || (int) $locked['acquired'] !== 1) return ['ok' => true, 'busy' => true];
+        $result = ['ok' => true, 'processed' => 0, 'sent' => 0, 'failed' => 0, 'sent_copy_errors' => 0, 'retry_wait' => 0];
+        try {
+            $batch = max(1, min(100, (int) $rc->config->get('scheduled_sending_batch', 20)));
+            $retry_delay = max(30, min(3600, (int) $rc->config->get('scheduled_sending_retry_delay', 300)));
+            $max_retries = max(0, min(288, (int) $rc->config->get('scheduled_sending_connect_retries', 12)));
+            $budget = max(1, min(300, (int) $rc->config->get('scheduled_sending_worker_budget', 45)));
+            $started = microtime(true);
+            $query = $db->query("SELECT * FROM $table WHERE (status='queued' AND scheduled_at <= UTC_TIMESTAMP()) OR (status='retry_wait' AND updated_at <= UTC_TIMESTAMP() - INTERVAL $retry_delay SECOND) OR (status='sent_copy_error' AND updated_at < UTC_TIMESTAMP() - INTERVAL 5 MINUTE) ORDER BY scheduled_at ASC LIMIT $batch");
+            if (!$query || $db->is_error()) throw new RuntimeException('Queue database read failed');
+            $rows = [];
+            while ($row = $db->fetch_assoc($query)) $rows[] = $row;
+            foreach ($rows as $row) {
+                // Leave remaining rows untouched for the next timer tick.
+                if (microtime(true) - $started >= $budget) break;
+                $id = (int) $row['id'];
+                $copy_only = $row['status'] === 'sent_copy_error';
+                $claim = $db->query("UPDATE $table SET status='processing', updated_at=UTC_TIMESTAMP() WHERE id=? AND status=?", $id, $row['status']);
+                if ($db->affected_rows($claim) !== 1) continue;
+                $result['processed']++;
+                $meta = [];
+                $accepted = $copy_only;
                 try {
-                    $storage = $rc->get_storage();
-                    $sentmb  = $cfg->get('sent_mbox', $cfg->get('scheduled_sending_sent_folder', 'Sent'));
-                    if (!empty($sentmb)) {
-                        if (!$storage->folder_exists($sentmb)) {
-                            $storage->create_folder($sentmb, true);
-                        }
-                        $storage->save_message($sentmb, $raw);
+                    $meta = json_decode((string) $row['meta_json'], true, 512, JSON_THROW_ON_ERROR);
+                    if (!is_array($meta) || empty($row['raw_mime'])) throw new RuntimeException('Incomplete queued message');
+                    [$headers, $body] = $this->_ss_split_raw_message($row['raw_mime']);
+                    $recipients = [];
+                    foreach (['to', 'cc', 'bcc'] as $field) $recipients = array_merge($recipients, $this->mm_addresses($meta[$field] ?? ''));
+                    $recipients = array_values(array_unique($recipients));
+                    $from = $this->mm_addresses($meta['from'] ?? '');
+                    if (!$from || !$recipients) throw new RuntimeException('Missing sender or recipient');
+                    foreach (array_keys($headers) as $key) if (in_array(strtolower($key), ['bcc', 'from', 'date'], true)) unset($headers[$key]);
+                    $headers['From'] = $meta['from'];
+                    $headers['Date'] = gmdate('D, d M Y H:i:s') . ' +0000';
+                    if (!preg_grep('/^message-id$/i', array_keys($headers))) {
+                        $domain = substr(strrchr($from[0], '@'), 1);
+                        $headers['Message-ID'] = '<ss-' . $id . '-' . substr(hash('sha256', $row['raw_mime']), 0, 24) . '@' . $domain . '>';
                     }
-                    $drafts = $cfg->get('drafts_mbox', 'Drafts');
-                    if (!empty($drafts)) {
-                        // Prefer direct UID if captured when draft was saved
-                        $draft_uid = null;
-                        if (isset($meta) && is_array($meta) && !empty($meta['draft_uid'])) {
-                            $draft_uid = (int)$meta['draft_uid'];
+                    if (!$copy_only) {
+                        $smtp = new rcube_smtp();
+                        $timeout = $rc->config->get('smtp_timeout');
+                        try {
+                            $rc->config->set('smtp_timeout', 30);
+                            $password = $rc->decrypt($meta['smtp_pass_enc'] ?? '');
+                            if ($meta['smtp_user'] !== '' && !is_string($password)) throw new RuntimeException('SMTP credentials unavailable');
+                            if (!$smtp->connect($meta['smtp_host'], null, $meta['smtp_user'], (string) $password)) {
+                                $detail = $smtp->get_error();
+                                $label = is_array($detail) ? ($detail['label'] ?? 'unknown') : 'unknown';
+                                // No MAIL/RCPT/DATA call has happened. Only this specific
+                                // pre-delivery connection failure is safe to retry.
+                                if ($label === 'smtpconnerror') throw new scheduled_sending_connection_retry('SMTP connection unavailable');
+                                throw new RuntimeException('SMTP connection or authentication failed (' . $label . ')');
+                            }
+                            if (!$smtp->send_mail($from[0], $recipients, $headers, $body)) throw new RuntimeException('SMTP did not confirm acceptance; check mail log before rescheduling');
+                            $accepted = true;
+                            $result['sent']++;
+                            $raw = $this->_ss_headers_to_raw($headers, $body);
+                            $persist = $db->query("UPDATE $table SET status='sent_copy_error', raw_mime=?, updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'", $raw, $id);
+                            if (!$persist || $db->is_error()) throw new RuntimeException('SMTP accepted; delivery state could not be saved. Check mail log');
+                        } finally {
+                            $smtp->disconnect();
+                            $rc->config->set('smtp_timeout', $timeout);
                         }
-                        if ($draft_uid) {
-                            $storage->delete_message($draft_uid, $drafts);
+                    } else {
+                        $raw = $row['raw_mime'];
+                    }
+                    $this->mm_save_sent($meta, $raw);
+                    $db->query("UPDATE $table SET status='sent', raw_mime=NULL, meta_json=?, last_error=NULL, updated_at=UTC_TIMESTAMP() WHERE id=?", $this->mm_clean_credentials($meta), $id);
+                    $this->log('worker sent', ['id' => $id, 'copy_only' => $copy_only]);
+                } catch (Throwable $error) {
+                    $status = $accepted ? 'sent_copy_error' : 'error';
+                    $message = $error->getMessage();
+                    if (!$accepted && $error instanceof scheduled_sending_connection_retry) {
+                        $attempt = (int) ($meta['smtp_connect_retries'] ?? 0) + 1;
+                        $meta['smtp_connect_retries'] = $attempt;
+                        if ($attempt <= $max_retries) {
+                            $status = 'retry_wait';
+                            $message = 'SMTP unavailable before submission. Retry in ' . $retry_delay . ' seconds (' . $attempt . '/' . $max_retries . ').';
+                            $db->query("UPDATE $table SET status=?, last_error=?, meta_json=?, updated_at=UTC_TIMESTAMP() WHERE id=?", $status, $message, json_encode($meta, JSON_THROW_ON_ERROR), $id);
                         } else {
-                            // Fallback: search by Message-ID header
-                            $msgid = '';
-                            if (isset($headers_arr['Message-ID'])) $msgid = $headers_arr['Message-ID'];
-                            if (!$msgid) {
-                                // parse from raw headers if needed
-                                if (preg_match('/^Message-ID:\s*(.+)$/mi', $raw, $mm)) { $msgid = trim($mm[1]); }
-                            }
-                            if ($msgid) {
-                                $index = $storage->search($drafts, 'HEADER', array('Message-ID' => $msgid));
-                                if ($index && !empty($index->count)) {
-                                    foreach ($index->get() as $msg) {
-                                        $storage->delete_message($msg->uid, $drafts);
-                                    }
-                                }
-                            }
+                            $message = 'SMTP unavailable after ' . $max_retries . ' retries. Held for review.';
+                            $db->query("UPDATE $table SET status=?, last_error=?, updated_at=UTC_TIMESTAMP() WHERE id=?", $status, $message, $id);
                         }
+                    } else {
+                        $db->query("UPDATE $table SET status=?, last_error=?, updated_at=UTC_TIMESTAMP() WHERE id=?", $status, $message, $id);
                     }
-                } catch (\Exception $e) {
-                    ss_debug(array('msg'=>'imap post-send', 'err'=>$e->getMessage()));
+                    $result[$status === 'retry_wait' ? 'retry_wait' : ($accepted ? 'sent_copy_errors' : 'failed')]++;
+                    $this->log('worker error', ['id' => $id, 'status' => $status, 'error' => $message]);
                 }
-
-                $db->query("UPDATE $table SET status='sent', raw_mime=NULL, last_error=NULL, updated_at=UTC_TIMESTAMP() WHERE id=?", $id);
-                $this->log('worker sent', array('id'=>$id)); $sent_ok++;
-            } else {
-                $err = (string)$err; if ($err === '') { $err = 'unknown failure'; }
-                $db->query("UPDATE $table SET last_error=?, updated_at=UTC_TIMESTAMP(), status='queued', scheduled_at=UTC_TIMESTAMP()+INTERVAL 5 MINUTE WHERE id=?", (string)$err, $id);
-                $this->log('worker retry scheduled', array('id'=>$id, 'delay'=>300, 'attempts'=>1));
-                if (!empty($err)) { $this->log('worker retry reason', array('id'=>$id,'error'=>$err)); $last_err = (string)$err; } $failed++;
             }
+            return $result;
+        } finally {
+            $db->query('SELECT RELEASE_LOCK(?)', $lock_key);
         }
-
-        return array('ok'=>true,'processed'=>$processed,'sent'=>$sent_ok,'failed'=>$failed,'last_error'=>$last_err);
     }
 }

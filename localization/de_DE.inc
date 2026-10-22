@@ -1,4 +1,5 @@
 <?php
+// Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md.
 $labels = array();
 $labels['scheduled_queue_title'] = 'Geplante Nachrichten';
 $labels['queue_cancel_ok'] = 'Abgesagt';
@@ -30,4 +31,19 @@ $labels['compose_form_not_ready'] = 'Kompositionsformular nicht bereit';
 $labels['reschedule_prompt'] = 'Neue Sendezeit eingeben (JJJJ-MM-TT HH:MM, Ihre Ortszeit):';
 $labels['reschedule_invalid'] = 'Datum/Uhrzeit konnte nicht geparst werden. Verwenden Sie das Format JJJJ-MM-TT HH:MM.';
 $labels['reschedule_future'] = 'Die neue Zeit muss in der Zukunft liegen.';
-?>
+
+
+$labels['queue_access_denied'] = 'Bitte anmelden, um geplante Nachrichten zu sehen.';
+$labels['queue_invalid_request'] = 'Die Anfrage konnte nicht geprüft werden. Bitte neu laden und erneut versuchen.';
+$labels['queue_change_failed'] = 'Die Nachricht konnte nicht geändert werden. Sie wird möglicherweise bereits verarbeitet oder ist nicht mehr verfügbar.';
+$labels['queue_read_failed'] = 'Die geplanten Nachrichten konnten nicht geladen werden.';
+$labels['queue_delete_ok'] = 'Geplante Nachricht gelöscht.';
+$labels['download_eml'] = 'Nachricht herunterladen (.eml)';
+$labels['already_scheduled'] = 'Diese Anfrage wurde bereits eingeplant. Bitte unter Geplante Nachrichten prüfen.';
+$labels['status_queued'] = 'Geplant';
+$labels['status_retry_wait'] = 'Wartet auf Mailserver';
+$labels['status_processing'] = 'Wird verarbeitet';
+$labels['status_error'] = 'Zur Prüfung angehalten';
+$labels['status_sent_copy_error'] = 'Versendet; Ablage ausstehend';
+$labels['recipient_prompt'] = 'E-Mail-Adresse des Empfängers:';
+$labels['recipient_required'] = 'Mindestens ein gültiger Empfänger ist erforderlich.';

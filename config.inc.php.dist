@@ -1,18 +1,13 @@
 <?php
-$config['scheduled_sending_table']  		= 'scheduled_queue';
-$config['scheduled_worker_batch']   		= 20;
-$config['scheduled_timezone']    			= 'America/Chicago'; // optional; storing UTC regardless
-$config['scheduled_sending_logging'] 		= false; // Enable plugin log entries
-$config['scheduled_debug']          		= false; // Enable Debugging
-$config['scheduled_force_plugin_assets'] 	= false;
-$config['scheduled_show_fab']       		= true;
-
-$config['scheduled_sending_worker_token'] 	= '32_character_key';
-$config['scheduled_sending_delivery'] 		= 'smtp'; // 'smtp', 'mail', or 'none' (dry-run)
-$config['scheduled_sending_batch'] 			= 25;        // optional
-$config['scheduled_sending_sent_folder'] 	= 'Sent'; // optional
-
-$config['db_table_scheduled_sending'] 		= 'scheduled_queue';
-
-$config['scheduled_sending_lock_key'] 		= 'scheduled_sending_worker';
-$config['scheduled_sending_lock_timeout'] 	= 10; // seconds
+// Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md.
+// MySQL/MariaDB InnoDB queue; set the same name in both settings if using the legacy alias.
+$config['db_table_scheduled_sending'] = 'scheduled_queue';
+// Queue page uses browser-local time; preferences/toasts use this display timezone.
+$config['scheduled_timezone'] = 'UTC';
+$config['scheduled_sending_batch'] = 20;
+$config['scheduled_sending_worker_budget'] = 45; // seconds; checked between jobs
+$config['scheduled_sending_connect_retries'] = 12; // only before any SMTP submission
+$config['scheduled_sending_retry_delay'] = 300;
+$config['scheduled_sending_max_message_size'] = 8388608; // complete encoded MIME
+$config['scheduled_sending_logging'] = false;
+$config['scheduled_debug'] = false; // traces may contain addresses and other message metadata

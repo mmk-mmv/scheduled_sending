@@ -2,9 +2,19 @@
 
 All notable changes to `scheduled_sending` should be documented in this file.
 
-## [Unreleased]
+## [1.4.0-beta.1] - 2026-10-23
 
-- Ongoing development builds use `scheduled_sending::PLUGIN_VERSION` with a `+dev` suffix until the next release is cut.
+Maintained fork preview; original upstream history is preserved.
+
+- CLI-only authenticated per-account SMTP and IMAP, encrypted credentials usable after logout, no PHP mail fallback.
+- Recipient parsing, body/attachment isolation, Bcc privacy, actual sending Date and stable Message-ID.
+- Serialized worker claims; bounded pre-submission connection retries; held ambiguous failures; Sent-only recovery.
+- Atomic, idempotent compose scheduling; owned sender identities; explicit request checks and safe error feedback.
+- Native queue menu/count, owner-scoped EML download, guarded mutations and confirmed UI updates.
+- Held errors cannot be requeued through the browser. Protected processing/completed/Sent-copy states cannot be deleted.
+- PHP/JS and MariaDB regression suites, pinned Roundcube parser source and PHP 8.1–8.5 CI.
+- Reviewed all eight existing public forks; documented decisions and operation/upgrade limits.
+- Removed unused legacy compose scripts that overrode Roundcube HTTP handling or navigated before confirmation.
 
 ## [1.0.0] - 2026-04-11
 

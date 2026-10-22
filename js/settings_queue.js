@@ -1,116 +1,32 @@
-
-/* settings_queue.js - Scheduled Sending preferences page bindings */
+/* Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md. */
+/* Update the preferences view only after the server confirms an owner-scoped change. */
 (function() {
-  function pad(n) { return (n < 10 ? '0' : '') + n; }
-
-  function bind_delete_links(rcmail) {
-    var nodes = document.querySelectorAll('.delete-scheduled-message');
-    if (!nodes.length) return;
-    function t(key) { return (rcmail.gettext ? rcmail.gettext(key, 'scheduled_sending') : key); }
-
-    Array.prototype.forEach.call(nodes, function(link) {
-      link.addEventListener('click', function(ev) {
-        ev.preventDefault();
-        var id = this.getAttribute('data-id');
-        if (!id) return;
-
-        var ok = window.confirm(t('delete') + '?');
-        if (!ok) return;
-
-        rcmail.http_post(
-          'plugin.scheduled_sending.queue_delete',
-          { _id: id, _token: rcmail.env.request_token },
-          rcmail.set_busy(true, 'loading')
-        );
-
-        // Optimistically remove the row
-        var row = this.closest('tr');
-        if (row && row.parentNode) {
-          row.parentNode.removeChild(row);
-        }
-      });
-    });
-  }
-
-  function bind_edit_links(rcmail) {
-    var nodes = document.querySelectorAll('.edit-scheduled-message');
-    if (!nodes.length) return;
-    function t(key) { return (rcmail.gettext ? rcmail.gettext(key, 'scheduled_sending') : key); }
-
-    Array.prototype.forEach.call(nodes, function(link) {
-      link.addEventListener('click', function(ev) {
-        ev.preventDefault();
-        var id = this.getAttribute('data-id');
-        var tsStr = this.getAttribute('data-ts') || '';
-        if (!id) return;
-
-        var defVal = '';
-        if (tsStr) {
-          var ts = parseInt(tsStr, 10);
-          if (ts > 0) {
-            var d = new Date(ts * 1000);
-            defVal = d.getFullYear() + '-' +
-                     pad(d.getMonth() + 1) + '-' +
-                     pad(d.getDate()) + ' ' +
-                     pad(d.getHours()) + ':' +
-                     pad(d.getMinutes());
-          }
-        }
-
-        var promptLabel = t('reschedule_prompt');
-        var val = window.prompt(promptLabel, defVal);
-        if (!val) return;
-
-        var normalized = val.replace(' ', 'T');
-        var d2 = new Date(normalized);
-        if (isNaN(d2.getTime())) {
-          window.alert(t('reschedule_invalid'));
-          return;
-        }
-
-        var nowSec = Math.floor(Date.now() / 1000);
-        var newTs = Math.floor(d2.getTime() / 1000);
-        if (newTs <= nowSec) {
-          window.alert(t('reschedule_future'));
-          return;
-        }
-
-        rcmail.http_post(
-          'plugin.scheduled_sending.queue_reschedule',
-          { id: id, at_ts: newTs, _token: rcmail.env.request_token },
-          rcmail.set_busy(true, 'loading')
-        );
-
-        // Show a localized toast immediately; server will also send one
-        try {
-          var msg = rcmail.gettext('queue_resched_ok', 'scheduled_sending');
-          if (msg) {
-            rcmail.display_message(msg, 'confirmation');
-          }
-        } catch (e) {}
-
-        // Reload so that the table shows the updated time
-        setTimeout(function() {
-          window.location.reload();
-        }, 600);
-      });
-    });
-  }
-
+  if (!window.rcmail) return;
+  function t(key) { return rcmail.gettext(key, 'scheduled_sending'); }
+  function pad(n) { return String(n).padStart(2, '0'); }
+  rcmail.addEventListener('plugin.scheduled_sending.queue_changed', function() { window.location.reload(); });
   function init() {
-    if (!window.rcmail) return;
-    var rcmail = window.rcmail;
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function() {
-        bind_delete_links(rcmail);
-        bind_edit_links(rcmail);
+    document.querySelectorAll('.delete-scheduled-message').forEach(function(link) {
+      link.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        if (!window.confirm(t('delete') + '?')) return;
+        rcmail.http_post('plugin.scheduled_sending.queue_delete', {_id: link.dataset.id, _token: rcmail.env.request_token}, rcmail.set_busy(true, 'loading'));
       });
-    } else {
-      bind_delete_links(rcmail);
-      bind_edit_links(rcmail);
-    }
+    });
+    document.querySelectorAll('.edit-scheduled-message').forEach(function(link) {
+      link.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        var dt = new Date(Number(link.dataset.ts) * 1000);
+        var def = dt.getFullYear() + '-' + pad(dt.getMonth()+1) + '-' + pad(dt.getDate()) + ' ' + pad(dt.getHours()) + ':' + pad(dt.getMinutes());
+        var value = window.prompt(t('reschedule_prompt'), def);
+        if (!value) return;
+        if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) { window.alert(t('reschedule_invalid')); return; }
+        var when = new Date(value.replace(' ', 'T'));
+        if (isNaN(when.getTime()) || when.getFullYear() !== Number(value.slice(0,4)) || when.getMonth()+1 !== Number(value.slice(5,7)) || when.getDate() !== Number(value.slice(8,10)) || when.getHours() !== Number(value.slice(11,13)) || when.getMinutes() !== Number(value.slice(14,16))) { window.alert(t('reschedule_invalid')); return; }
+        if (when.getTime() <= Date.now()) { window.alert(t('reschedule_future')); return; }
+        rcmail.http_post('plugin.scheduled_sending.queue_reschedule', {id: link.dataset.id, at_ts: Math.floor(when.getTime()/1000), _token: rcmail.env.request_token}, rcmail.set_busy(true, 'loading'));
+      });
+    });
   }
-
-  init();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

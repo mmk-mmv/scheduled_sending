@@ -1,4 +1,5 @@
 <?php
+// Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md.
 require_once __DIR__ . '/worker_send_due.inc.php';
 require_once __DIR__ . '/queue.inc.php';
 /**
@@ -7,13 +8,13 @@ require_once __DIR__ . '/queue.inc.php';
  */
 class scheduled_sending extends rcube_plugin
 {
-    const PLUGIN_VERSION = '1.3.2';
+    const PLUGIN_VERSION = '1.4.0-beta.1';
     const PLUGIN_INFO = array(
         'name' => 'scheduled_sending',
         'vendor' => 'Gene Hawkins',
         'version' => self::PLUGIN_VERSION,
         'license' => 'GPL-3.0',
-        'uri' => 'https://github.com/texxasrulez/scheduled_sending',
+        'uri' => 'https://github.com/mmk-mmv/scheduled_sending',
     );
 
     public static function info(): array
@@ -85,7 +86,7 @@ class scheduled_sending extends rcube_plugin
     }
 
     use scheduled_sending_worker_trait, scheduled_sending_queue_trait;
-    public $task = 'login|mail|settings';
+    public $task = 'login|mail|settings|addressbook';
     private $rc;
     private $logname = 'scheduled_sending';
     
@@ -349,9 +350,6 @@ class scheduled_sending extends rcube_plugin
             if (isset($ctx['bucket']) && is_array($ctx['bucket'])) {
                 $candidate = $this->_ss_extract_body_candidate($ctx['bucket']);
             }
-            if (!$candidate && isset($ctx['session']) && is_array($ctx['session'])) {
-                $candidate = $this->_ss_extract_body_candidate($ctx['session']);
-            }
         }
         if ($candidate && !empty($candidate['body'])) {
             $this->ss_debug(array('msg' => 'compose_body_hydrated', 'is_html' => (int)$candidate['is_html'], 'path' => isset($candidate['path']) ? $candidate['path'] : '?', 'len' => strlen($candidate['body'])));
@@ -362,36 +360,7 @@ class scheduled_sending extends rcube_plugin
 
     private function _ss_capture_smtp_credentials()
     {
-        try {
-            $rc = $this->rc ?: rcmail::get_instance();
-            $cfg = $rc->config;
-            $smtp_user = (string) $cfg->get('smtp_user', '');
-            $login_user = '';
-
-            if (isset($_SESSION) && is_array($_SESSION)) {
-                if (!empty($_SESSION['username'])) {
-                    $login_user = (string) $_SESSION['username'];
-                }
-            }
-
-            if ($login_user === '' && $rc->user && !empty($rc->user->data['username'])) {
-                $login_user = (string) $rc->user->data['username'];
-            }
-
-            if ($smtp_user === '%u') {
-                $smtp_user = $login_user;
-            }
-
-            $meta = array();
-            if ($smtp_user !== '') {
-                $meta['smtp_user'] = $smtp_user;
-            }
-
-            return $meta;
-        } catch (Exception $e) {
-            $this->ss_debug(array('msg' => 'smtp_credential_capture_failed', 'err' => $e->getMessage()));
-            return array();
-        }
+        return $this->mm_capture_credentials();
     }
 
     private function _ss_apply_smtp_credentials($meta)
@@ -536,109 +505,34 @@ class scheduled_sending extends rcube_plugin
     private function _ss_resolve_from_identity($posted_from)
     {
         $rc = $this->rc ?: rcmail::get_instance();
+        if (!is_string($posted_from) && $posted_from !== null) return ['id' => 0, 'from' => '', 'identity' => []];
         $posted = trim((string) $posted_from);
         $identity = null;
-        $identity_id = 0;
-
-        if ($posted !== '' && ctype_digit($posted) && $rc->user && method_exists($rc->user, 'get_identity')) {
-            $identity_id = (int) $posted;
-            $identity = $rc->user->get_identity($identity_id);
-            if (is_object($identity)) {
-                $identity = (array) $identity;
-            }
-        }
-
-        if ((!is_array($identity) || empty($identity['email'])) && $posted !== '') {
-            $email = $posted;
-            $name = '';
-            if (preg_match('/^(.*)<([^>]+)>$/', $posted, $m)) {
-                $name = trim($m[1], " \t\n\r\0\x0B\"'");
-                $email = trim($m[2]);
-            }
-            if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $identity = array('identity_id' => $identity_id, 'email' => $email, 'name' => $name !== '' ? $name : $email);
-            }
-        }
-
-        if ((!is_array($identity) || empty($identity['email'])) && $rc->user && method_exists($rc->user, 'list_identities')) {
-            $identities = $rc->user->list_identities();
-            if (is_array($identities)) {
-                if ($identity_id && isset($identities[$identity_id])) {
-                    $candidate = is_object($identities[$identity_id]) ? (array) $identities[$identity_id] : $identities[$identity_id];
-                    if (is_array($candidate) && !empty($candidate['email'])) {
-                        $identity = $candidate;
-                    }
+        // Always resolve through the authenticated user's identities. Never accept
+        // an arbitrary From address supplied by a browser or another account's ID.
+        $identities = $rc->user && method_exists($rc->user, 'list_identities')
+            ? $rc->user->list_identities() : [];
+        foreach ((array) $identities as $candidate) {
+            $candidate = (array) $candidate;
+            if (empty($candidate['email'])) continue;
+            $id = (int) ($candidate['identity_id'] ?? $candidate['id'] ?? 0);
+            if ($posted !== '') {
+                if (ctype_digit($posted)) {
+                    if ($id !== (int) $posted) continue;
+                } else {
+                    $email = $posted;
+                    if (preg_match('/<([^<>]+)>$/D', $posted, $m)) $email = trim($m[1]);
+                    if (strcasecmp($email, $candidate['email']) !== 0) continue;
                 }
-                if ((!is_array($identity) || empty($identity['email'])) && $identity_id) {
-                    foreach ($identities as $key => $candidate) {
-                        if (is_object($candidate)) $candidate = (array) $candidate;
-                        if (!is_array($candidate) || empty($candidate['email'])) continue;
-                        $candidate_id = 0;
-                        if (!empty($candidate['identity_id'])) $candidate_id = (int) $candidate['identity_id'];
-                        elseif (!empty($candidate['id'])) $candidate_id = (int) $candidate['id'];
-                        elseif (is_numeric($key)) $candidate_id = (int) $key;
-                        if ($candidate_id === $identity_id) {
-                            $identity = $candidate;
-                            break;
-                        }
-                    }
-                }
-                if ((!is_array($identity) || empty($identity['email']))) {
-                    foreach ($identities as $candidate) {
-                        if (is_object($candidate)) $candidate = (array) $candidate;
-                        if (is_array($candidate) && !empty($candidate['email']) && !empty($candidate['standard'])) {
-                            $identity = $candidate;
-                            break;
-                        }
-                    }
-                }
-                if ((!is_array($identity) || empty($identity['email']))) {
-                    foreach ($identities as $candidate) {
-                        if (is_object($candidate)) $candidate = (array) $candidate;
-                        if (is_array($candidate) && !empty($candidate['email'])) {
-                            $identity = $candidate;
-                            break;
-                        }
-                    }
-                }
+                $identity = $candidate;
+                break;
             }
+            if ($identity === null || !empty($candidate['standard'])) $identity = $candidate;
+            if (!empty($candidate['standard'])) break;
         }
-
-        if (is_array($identity)) {
-            if (!empty($identity['identity_id'])) {
-                $identity_id = (int) $identity['identity_id'];
-            } elseif (!empty($identity['id'])) {
-                $identity_id = (int) $identity['id'];
-            }
-        }
-
+        $identity_id = (int) ($identity['identity_id'] ?? $identity['id'] ?? 0);
         $from = $this->_ss_format_from_header($identity);
-        if ($from === '') {
-            $fallback_email = '';
-            if ($rc->user && !empty($rc->user->data['username']) && filter_var($rc->user->data['username'], FILTER_VALIDATE_EMAIL)) {
-                $fallback_email = (string) $rc->user->data['username'];
-            } elseif (isset($_SESSION) && !empty($_SESSION['username']) && filter_var($_SESSION['username'], FILTER_VALIDATE_EMAIL)) {
-                $fallback_email = (string) $_SESSION['username'];
-            } else {
-                $smtp_user = (string) $rc->config->get('smtp_user', '');
-                if ($smtp_user !== '%u' && filter_var($smtp_user, FILTER_VALIDATE_EMAIL)) {
-                    $fallback_email = $smtp_user;
-                }
-            }
-            if ($fallback_email !== '') {
-                $identity = array('identity_id' => $identity_id, 'email' => $fallback_email, 'name' => $fallback_email);
-                $from = $this->_ss_format_from_header($identity);
-            }
-        }
-
-        $this->ss_debug(array(
-            'msg' => 'from_resolved',
-            'posted_from' => $posted,
-            'identity_id' => $identity_id,
-            'has_from' => (int) ($from !== ''),
-        ));
-
-        return array('id' => $identity_id, 'from' => $from, 'identity' => is_array($identity) ? $identity : array());
+        return ['id' => $identity_id, 'from' => $from, 'identity' => $identity ?: []];
     }
 
     private function _ss_ensure_from_header($raw, $from)
@@ -658,24 +552,43 @@ class scheduled_sending extends rcube_plugin
         return 'From: ' . $from . "\r\n" . $raw;
     }
 
+    private function _ss_read_recipients($raw_mime = '')
+    {
+        $headers = $raw_mime !== '' ? $this->ss_parse_headers($raw_mime) : array();
+        $recipients = array();
+        foreach (array('to' => 'An', 'cc' => 'Cc', 'bcc' => 'Bcc') as $field => $label) {
+            // Roundcube's default HTML filter removes <address@example.org>.
+            // Preserve address syntax here, validate it, and escape only for display.
+            $value = rcube_utils::get_input_value('_' . $field, rcube_utils::INPUT_POST, true);
+            if ($value === null) $value = isset($headers[$field]) ? $headers[$field] : '';
+            if (!is_string($value) || preg_match('/[\r\n\x00]/', $value)) {
+                throw new InvalidArgumentException('Planung fehlgeschlagen: Ungültige Empfängerangabe im Feld ' . $label . '.');
+            }
+            $value = trim($value);
+            if ($value !== '') {
+                $addresses = rcube_mime::decode_address_list($value, null, false, null, true);
+                if (!$addresses) {
+                    throw new InvalidArgumentException('Planung fehlgeschlagen: E-Mail-Adresse im Feld ' . $label . ' prüfen.');
+                }
+                foreach ($addresses as $address) {
+                    if (filter_var($address, FILTER_VALIDATE_EMAIL) === false) {
+                        throw new InvalidArgumentException('Planung fehlgeschlagen: E-Mail-Adresse im Feld ' . $label . ' prüfen.');
+                    }
+                }
+            }
+            $recipients[$field] = $value;
+        }
+        if (!$this->_ss_has_recipient($recipients['to'], $recipients['cc'], $recipients['bcc'])) {
+            throw new InvalidArgumentException('Planung fehlgeschlagen: Mindestens eine gültige Empfängeradresse ist erforderlich.');
+        }
+        return $recipients;
+    }
+
     private function _ss_has_recipient($to, $cc = '', $bcc = '')
     {
         foreach (array($to, $cc, $bcc) as $list) {
-            $list = trim((string) $list);
-            if ($list === '') continue;
-
-            foreach (preg_split('/\s*,\s*/', $list) as $addr) {
-                $addr = trim($addr);
-                if ($addr === '') continue;
-                if (preg_match('/<([^>]+)>/', $addr, $m)) {
-                    $addr = trim($m[1]);
-                }
-                if (filter_var($addr, FILTER_VALIDATE_EMAIL)) {
-                    return true;
-                }
-            }
+            if ($this->mm_addresses($list)) return true;
         }
-
         return false;
     }
 
@@ -808,6 +721,8 @@ class scheduled_sending extends rcube_plugin
             }
             if (!count($candidates)) $candidates[] = $sess;
 
+            // Never collect attachments from another compose tab in this user's session.
+            $candidates = is_array($bucket) ? array($bucket) : array();
             foreach ($candidates as $cand) $walk($cand, '');
 
             // If client posted specific attach ids, filter by those
@@ -820,7 +735,7 @@ class scheduled_sending extends rcube_plugin
                         }
                     }
                 }
-                if (count($filtered)) $attachments = $filtered;
+                $attachments = $filtered;
             }
 
             $this->ss_debug(array('msg'=>'compose_session_found_attach','count'=>count($attachments)));
@@ -978,14 +893,19 @@ class scheduled_sending extends rcube_plugin
         $this->register_action('plugin.scheduled_sending.queue_cancel', array($this, 'action_queue_cancel'));
         $this->register_action('plugin.scheduled_sending.queue_delete', array($this, 'action_queue_delete'));
         $this->register_action('plugin.scheduled_sending.queue_reschedule', array($this, 'action_queue_reschedule'));
+        $this->register_action('plugin.scheduled_sending.queue_count', array($this, 'action_queue_count'));
+        $this->register_action('plugin.scheduled_sending.queue_download', array($this, 'action_queue_download'));
 
         // Add hook for preferences sections
         if ($this->rc->task == 'settings') {
             $this->add_hook('preferences_sections_list', array($this, 'preferences_sections_list'));
             $this->add_hook('preferences_list', array($this, 'preferences_list'));
         // Client command to open queue
-        } else if ($this->rc->task == 'mail') {
+        }
+        if ($this->rc->user && (int) $this->rc->user->ID > 0 && !$this->rc->output->framed) {
             $this->include_script('js/queue.js');
+            $this->include_stylesheet('queue.css');
+            $this->add_button(array('id' => 'scheduled-sending-menu', 'command' => 'plugin.scheduled_sending.open_queue', 'type' => 'link', 'class' => 'scheduled_sending', 'classact' => 'scheduled_sending active', 'label' => 'scheduled_sending.scheduled_queue_title', 'innerclass' => 'inner'), 'taskbar');
         }
 
         /* SS: early worker intercept (handles login bounce via _url) */
@@ -1065,249 +985,17 @@ class scheduled_sending extends rcube_plugin
 
     private function build_inline_panel_html()
     {
-        // default value: local now + 30min (no seconds)
-        $def = date('Y-m-d\TH:i', time() + 1800);
-
-        // inline fallback binder: uses RC's http_post, de-duped, no full form submit
-        $inline = <<<HTML
-		<script>
-		(function(){
-		  if (window.__SS_BOUND) return; // avoid double binding
-		  window.__SS_BOUND = true;
-
-		  function nowTs(){ return Math.floor(Date.now()/1000); }
-
-		  function bind(){
-			var btn = document.getElementById('ss-schedule-btn');
-			if (!btn) return;
-			var inflight = false;
-			btn.addEventListener('click', function(ev){
-			  ev.preventDefault();
-			  if (inflight) return;
-			  var when = document.getElementById('ss-when');
-			  if (!when || !when.value) { if (window.rcmail) rcmail.display_message('Pick a future time', 'error'); return; }
-			  var d = new Date(when.value);
-			  if (isNaN(d.getTime()) || d.getTime() <= Date.now()) { if (window.rcmail) rcmail.display_message('Pick a future time', 'error'); return; }
-
-			  var form = document.getElementById('composeform') || btn.closest('form');
-			  if (!form) { if (window.rcmail) rcmail.display_message('Compose form not ready', 'error'); return; }
-
-			  // build payload (minimal safe fields)
-			  var data = {};
-			  var f = new FormData(form);
-			  function copyField(name, as){ if (f.has(name)) data[as||name] = f.get(name); }
-			  copyField('_id');
-			  copyField('_from'); // identity id
-			  copyField('_to');
-			  copyField('_cc');
-			  copyField('_bcc');
-			  copyField('_subject');
-			  copyField('_is_html');
-
-			  if (!((data['_to'] || '').trim() || (data['_cc'] || '').trim() || (data['_bcc'] || '').trim())) {
-				var rcpt = window.prompt(rcmail && rcmail.gettext ? rcmail.gettext('recipient_prompt', 'scheduled_sending') : 'Email address to send to');
-				if (!rcpt || !rcpt.trim()) {
-				  if (window.rcmail) rcmail.display_message(rcmail.gettext ? rcmail.gettext('recipient_required', 'scheduled_sending') : 'Recipient required', 'error');
-				  return;
-				}
-				data['_to'] = rcpt.trim();
-				var toField = form.querySelector('[name="_to"]');
-				if (toField) toField.value = data['_to'];
-			  }
-
-			  function isPlainHtml(html, text) {
-				if (!html) return true;
-				var s = ('' + html).replace(/<div[^>]*id=['"]?_rc_sig['"]?[^>]*>[\s\S]*?<\/div>/gi, '');
-				s = s.replace(/&nbsp;/gi, ' ');
-				if (/<(?!\/?(p|br)\b)/i.test(s)) return false;
-				var t = s.replace(/<\/p>\s*<p[^>]*>/gi, "\\n\\n")
-				  .replace(/<br\s*\/?>/gi, "\\n")
-				  .replace(/<\/?p[^>]*>/gi, '')
-				  .replace(/<[^>]+>/g, '')
-				  .trim();
-				var plain = ('' + (text || '')).trim();
-				return t === plain || t === plain.replace(/\n+$/, '');
-			  }
-
-			  try { if (window.tinyMCE && tinyMCE.triggerSave) tinyMCE.triggerSave(); } catch(e) {}
-			  try { if (window.rcmail && rcmail.editor && typeof rcmail.editor.save === 'function') rcmail.editor.save(); } catch(e) {}
-			  try {
-				var html = '', text = '';
-				if (window.tinyMCE && tinyMCE.activeEditor) {
-				  html = tinyMCE.activeEditor.getContent({format:'html'}) || '';
-				  text = tinyMCE.activeEditor.getContent({format:'text'}) || '';
-				}
-				if (!text) {
-				  var textarea = form.querySelector('textarea[name="_message"]');
-				  if (textarea) text = textarea.value || '';
-				}
-				if (html && !isPlainHtml(html, text)) {
-				  data['_message_html'] = html;
-				  data['_is_html'] = 1;
-				} else {
-				  data['_message'] = text || '';
-				  delete data['_message_html'];
-				  delete data['_is_html'];
-				}
-			  } catch(e) {}
-
-			  data['_schedule_at'] = when.value;
-			  data['_schedule_ts'] = Math.floor(d.getTime()/1000);
-			  data['_schedule_tzoffset'] = - (new Date().getTimezoneOffset()); // minutes
-
-			  // mark compose as clean to avoid discard modal
-			  if (window.rcmail) {
-				rcmail.env.compose_submit = true;
-				rcmail.env.is_dirty = false;
-				rcmail.env.exit_warning = false;
-			  }
-
-			  // AJAX via Roundcube
-			  inflight = true;
-			  btn.disabled = true;
-			  try {
-				if (window.rcmail && typeof rcmail.http_post === 'function') {
-				  rcmail.http_post('plugin.scheduled_sending.schedule', data);
-				} else {
-				  if (window.rcmail && rcmail.env && rcmail.env.request_token) {
-					data['_token'] = rcmail.env.request_token;
-				  }
-				  // last-resort sync fallback (should not happen)
-				  var xhr = new XMLHttpRequest();
-				  xhr.open('POST', '?_task=mail&_action=plugin.scheduled_sending.schedule&_remote=1', true);
-				  xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
-				  var parts = [];
-				  for (var k in data) { if (data.hasOwnProperty(k)) parts.push(encodeURIComponent(k)+'='+encodeURIComponent(data[k])); }
-				  xhr.send(parts.join('&'));
-				}
-			  } catch(e) {
-				inflight = false; btn.disabled = false;
-				if (window.console) console.error(e);
-			  }
-			  // re-enable after a short time; server will show toast
-			  setTimeout(function(){ inflight=false; btn.disabled=false; }, 1200);
-			}, { once:false });
-		  }
-
-		  if (document.readyState === 'loading') {
-			document.addEventListener('DOMContentLoaded', bind);
-		  } else {
-			bind();
-		  }
-		})();
-		</script>
-		HTML;
-
-				$send_at_label = rcube::Q($this->gettext('sendat'));
-				$send_later_label = rcube::Q($this->gettext('sendlater'));
-				$html = <<<HTML
-		<div id="ss-inline-schedule" class="ss-row">
-		  <label class="ss-label">⏰ {$send_at_label}</label>
-		  <input id="ss-when" type="datetime-local" name="_schedule_at" value="{$def}" />
-		  <button type="button" id="ss-schedule-btn" class="button">{$send_later_label}</button>
-		</div>
-		$inline
-		HTML;
-        return $html;
+        $label = rcube::Q($this->gettext('sendlater'));
+        return '<div id="ss-inline-schedule" class="ss-row">'
+            . '<label class="ss-label" for="ss-when">Versandzeit</label>'
+            . '<input id="ss-when" type="datetime-local" name="_schedule_at" required />'
+            . '<button type="button" id="ss-schedule-btn" class="button">' . $label . '</button></div>';
     }
 
     public function action_schedule()
     {
         $rc = $this->rc;
-        if (method_exists($rc, 'check_request') && !$rc->check_request()) {
-            $rc->output->command('display_message', 'Invalid request token.', 'error');
-            $rc->output->send();
-            return;
-        }
-
-        // ===== SS TZ DEBUG START =====
-        try {
-            $post = function($k){ return rcube_utils::get_input_value($k, rcube_utils::INPUT_GPC); };
-            $dbg = array(
-                'msg' => 'tz_debug',
-                'php_default_tz' => @date_default_timezone_get(),
-                'server_now_utc' => gmdate('Y-m-d H:i:s'),
-                'server_now_local' => date('Y-m-d H:i:s'),
-                'posted' => array(
-                    'scheduled_at' => $post('scheduled_at'),
-                    'scheduled_at_is_utc' => $post('scheduled_at_is_utc'),
-                    'schedule_date' => $post('schedule_date'),
-                    'schedule_time' => $post('schedule_time'),
-                    'tz_offset' => $post('tz_offset'),
-                    '_schedule_at' => $post('_schedule_at'),
-                    '_schedule_ts' => $post('_schedule_ts'),
-                    '_schedule_tzoffset' => $post('_schedule_tzoffset'),
-                ),
-            );
-            $this->ss_debug($dbg);
-        } catch (Exception $e) {
-            $this->ss_debug(array('msg'=>'tz_debug_error','err'=>$e->getMessage()));
-        }
-       
-        /* SS: schedule TZ normalize (v58) */
-        try {
-            $post     = function($k){ return rcube_utils::get_input_value($k, rcube_utils::INPUT_GPC); };
-            $incoming = $post('scheduled_at');
-            $is_utc   = $post('scheduled_at_is_utc');
-            $tzoff    = $post('tz_offset');
-
-            // v57 underscore fallbacks
-            $sched_at_u = $post('_schedule_at');
-            $sched_ts   = $post('_schedule_ts');
-            $sched_tzo  = $post('_schedule_tzoffset');
-
-            $scheduled_utc = null;
-
-            if ($is_utc && $incoming) {
-                // Client already sent UTC string
-                $scheduled_utc = trim($incoming);
-                $this->ss_debug(array('msg'=>'tz skip (client utc)','scheduled_at'=>$scheduled_utc));
-            }
-            elseif ($sched_ts) {
-                // Epoch seconds are absolute UTC
-                $ts = (int)$sched_ts;
-                if ($ts > 0) {
-                    $scheduled_utc = gmdate('Y-m-d H:i:s', $ts);
-                    $this->ss_debug(array('msg'=>'tz from _schedule_ts','scheduled_at'=>$scheduled_utc));
-                }
-            }
-            else {
-                // Build from local wall time and an offset
-                $stamp = $incoming;
-                if (!$stamp) $stamp = $sched_at_u;
-                if (!$stamp) {
-                    $d = $post('schedule_date'); $t = $post('schedule_time');
-                    if ($d && $t) $stamp = trim($d).' '.trim($t);
-                }
-
-                // Prefer tz_offset (positive minutes == UTC - local), else use _schedule_tzoffset (negative usually)
-                $off = 0;
-                if ($tzoff !== null && $tzoff !== '') {
-                    $off = (int)$tzoff;            // e.g. Chicago summer => 300
-                } elseif ($sched_tzo !== null && $sched_tzo !== '') {
-                    // Roundcube older field is often negative of tz_offset
-                    $raw = (int)$sched_tzo;        // e.g. -300
-                    $off = ($raw > 0) ? $raw : -$raw;
-                }
-
-                if ($stamp) {
-                    // Parse local and add offset minutes to get UTC
-                    $ts = strtotime($stamp . ':00'); // add seconds for consistency
-                    if ($ts !== false) {
-                        $ts += $off * 60;
-                        $scheduled_utc = gmdate('Y-m-d H:i:s', $ts);
-                        $this->ss_debug(array('msg'=>'tz normalized','scheduled_at'=>$scheduled_utc,'tz_offset'=>$off));
-                    }
-                }
-            }
-
-            if ($scheduled_utc) {
-                $_REQUEST['scheduled_at'] = $_POST['scheduled_at'] = $_GET['scheduled_at'] = $scheduled_utc;
-            }
-        } catch (Exception $e) {
-            $this->ss_debug(array('msg'=>'tz normalize error','err'=>$e->getMessage()));
-        }
-        $this->ss_debug(array('msg'=>'action_schedule start','time'=>date('c'),'framed'=>(int)$rc->output->framed));
+        if (!$this->ss_queue_check_request()) return;
 
         // pull time
         $when    = rcube_utils::get_input_value('_schedule_at', rcube_utils::INPUT_POST);
@@ -1343,9 +1031,14 @@ class scheduled_sending extends rcube_plugin
 
         $scheduled_at = gmdate('Y-m-d H:i:00', $epoch);
 
+        $request_id = rcube_utils::get_input_value('_ss_request_id', rcube_utils::INPUT_POST);
+        if (!is_string($request_id) || !preg_match('/^[A-Za-z0-9_-]{16,80}$/D', $request_id)) {
+            $this->ss_queue_error('queue_invalid_request');
+            return;
+        }
         // user + identity
         $user_id = $rc->user ? (int) $rc->user->ID : 0;
-        $from_info = $this->_ss_resolve_from_identity(rcube_utils::get_input_value('_from', rcube_utils::INPUT_POST));
+        $from_info = $this->_ss_resolve_from_identity(rcube_utils::get_input_value('_from', rcube_utils::INPUT_POST, true));
         $identity_id = (int) $from_info['id'];
         $resolved_from = (string) $from_info['from'];
         if ($resolved_from === '') {
@@ -1355,49 +1048,44 @@ class scheduled_sending extends rcube_plugin
             return;
         }
 
-        // gather light meta
-        $meta = array(
-            'from' => $resolved_from,
-            'to'   => rcube_utils::get_input_value('_to', rcube_utils::INPUT_POST),
-            'cc'   => rcube_utils::get_input_value('_cc', rcube_utils::INPUT_POST),
-            'bcc'  => rcube_utils::get_input_value('_bcc', rcube_utils::INPUT_POST),
-            'subj' => rcube_utils::get_input_value('_subject', rcube_utils::INPUT_POST),
-            'html' => (int) rcube_utils::get_input_value('_is_html', rcube_utils::INPUT_POST),
-        );
-        $meta = array_merge($meta, $this->_ss_capture_smtp_credentials());
-
-        // DB insert (no NULL raw_mime)
-        $table = $rc->config->get('scheduled_sending_table', 'scheduled_queue');
-        $db = $rc->get_dbh();
-        // Build or accept raw MIME payload (minimal fallback if client does not send _raw_mime)
         $raw_mime = rcube_utils::get_input_value('_raw_mime', rcube_utils::INPUT_POST, true);
         if ($raw_mime === null) $raw_mime = '';
-        $raw_mime = $this->_ss_ensure_from_header($raw_mime, $resolved_from);
-        if (!$this->_ss_has_recipient($meta['to'], $meta['cc'], $meta['bcc']) && $raw_mime !== '') {
-            $raw_hdrs = $this->ss_parse_headers($raw_mime);
-            if (!$this->_ss_has_recipient(
-                isset($raw_hdrs['to']) ? $raw_hdrs['to'] : '',
-                isset($raw_hdrs['cc']) ? $raw_hdrs['cc'] : '',
-                isset($raw_hdrs['bcc']) ? $raw_hdrs['bcc'] : ''
-            )) {
-                $this->ss_debug(array('msg' => 'schedule_error_no_recipient'));
-                $rc->output->command('display_message', 'Unable to schedule: recipient required', 'error');
-                $rc->output->send();
-                return;
+        $subject = rcube_utils::get_input_value('_subject', rcube_utils::INPUT_POST, true);
+        if ($subject === null) $subject = '';
+        try {
+            if (!is_string($raw_mime) || !is_string($subject) || preg_match('/[\r\n\x00]/', $subject)) {
+                throw new InvalidArgumentException('Planung fehlgeschlagen: Ungültiger Nachrichtenkopf.');
             }
+            $recipients = $this->_ss_read_recipients($raw_mime);
+        } catch (InvalidArgumentException $e) {
+            $rc->output->command('display_message', $e->getMessage(), 'error');
+            $rc->output->send();
+            return;
         }
-        if ($raw_mime === '') {
-            $subject = (string) rcube_utils::get_input_value('_subject', rcube_utils::INPUT_POST, true);
-            $to      = (string) rcube_utils::get_input_value('_to', rcube_utils::INPUT_POST, true);
-            $cc      = (string) rcube_utils::get_input_value('_cc', rcube_utils::INPUT_POST, true);
-            $bcc     = (string) rcube_utils::get_input_value('_bcc', rcube_utils::INPUT_POST, true);
 
-            if (!$this->_ss_has_recipient($to, $cc, $bcc)) {
-                $this->ss_debug(array('msg' => 'schedule_error_no_recipient'));
-                $rc->output->command('display_message', 'Unable to schedule: recipient required', 'error');
-                $rc->output->send();
-                return;
-            }
+        // Use the same validated recipient values for queue metadata and MIME.
+        $meta = array_merge($recipients, array(
+            'from' => $resolved_from,
+            'subj' => $subject,
+            'html' => (int) rcube_utils::get_input_value('_is_html', rcube_utils::INPUT_POST),
+        ));
+        try {
+            $meta = array_merge($meta, $this->_ss_capture_smtp_credentials());
+        } catch (Throwable $e) {
+            $rc->output->command('display_message', 'Planung fehlgeschlagen: Zugangsdaten konnten nicht sicher gespeichert werden.', 'error');
+            $rc->output->send();
+            return;
+        }
+
+        // DB insert (no NULL raw_mime)
+        $table = $this->ss_queue_table();
+        $db = $rc->get_dbh();
+        // Build or accept raw MIME payload (minimal fallback if client does not send _raw_mime)
+        $raw_mime = $this->_ss_ensure_from_header($raw_mime, $resolved_from);
+        if ($raw_mime === '') {
+            $to  = $meta['to'];
+            $cc  = $meta['cc'];
+            $bcc = $meta['bcc'];
 
                         $body    = (string) rcube_utils::get_input_value('_message', rcube_utils::INPUT_POST, true);
             $msg_html = rcube_utils::get_input_value('_message_html', rcube_utils::INPUT_POST, true);
@@ -1420,10 +1108,13 @@ class scheduled_sending extends rcube_plugin
             $compose_id = rcube_utils::get_input_value('_id', rcube_utils::INPUT_POST);
             $compose_ctx = $this->_ss_get_compose_context($compose_id);
             $compose_id = isset($compose_ctx['id']) ? $compose_ctx['id'] : $compose_id;
-            $hydrated = $this->_ss_resolve_body_from_context($compose_ctx, $body, $is_html);
+            $body_was_posted = rcube_utils::get_input_value('_message', rcube_utils::INPUT_POST, true) !== null
+                || rcube_utils::get_input_value('_message_html', rcube_utils::INPUT_POST, true) !== null;
+            $hydrated = $body_was_posted ? array('body' => $body, 'is_html' => $is_html)
+                : $this->_ss_resolve_body_from_context($compose_ctx, $body, $is_html);
             $body = $hydrated['body'];
             $is_html = $hydrated['is_html'];
-            $current_body_available = !$this->_ss_body_is_empty($body, $is_html);
+            $current_body_available = $body_was_posted || !$this->_ss_body_is_empty($body, $is_html);
 
             $attach_ids = rcube_utils::get_input_value('_attach_ids', rcube_utils::INPUT_POST);
             if (!is_array($attach_ids)) { $attach_ids = $attach_ids ? array($attach_ids) : array(); }
@@ -1436,6 +1127,9 @@ class scheduled_sending extends rcube_plugin
             }
             $expected_attachments = count($attach_ids);
             if (!$expected_attachments && count($attach_probe)) $expected_attachments = count($attach_probe);
+            if (isset($compose_ctx['bucket']['attachments']) && is_array($compose_ctx['bucket']['attachments'])) {
+                $expected_attachments = max($expected_attachments, count($compose_ctx['bucket']['attachments']));
+            }
             $compose_mime = '';
             $compose_attach_count = 0;
             if ($compose_id) {
@@ -1475,9 +1169,6 @@ class scheduled_sending extends rcube_plugin
                 } catch (Exception $e) {
                     $this->ss_debug(array('msg'=>'draft_uid_fetch_err','err'=>$e->getMessage()));
                 }
-            }
-            if (!$current_body_available && $draft_mime === '') {
-                $draft_mime = $this->_ss_try_fetch_draft_mime($subject, $from);
             }
 
             $draft_used = false;
@@ -1531,14 +1222,47 @@ class scheduled_sending extends rcube_plugin
 
         }
 
-        $q  = "INSERT INTO $table (user_id, identity_id, scheduled_at, status, raw_mime, meta_json, created_at, updated_at)
-               VALUES (?, ?, ?, 'queued', ?,  ?, NOW(), NOW())";
-        $ok = $db->query($q, $user_id, $identity_id, $scheduled_at, $raw_mime, json_encode($meta));
-        $job_id = $db->insert_id();
+        if (!empty($expected_attachments) && $this->_ss_mime_attachment_count($raw_mime) < $expected_attachments) {
+            $rc->output->command('display_message', 'Planung fehlgeschlagen: Die Anhänge konnten nicht vollständig übernommen werden. Der Entwurf bleibt geöffnet.', 'error');
+            $rc->output->send();
+            return;
+        }
+        if (strlen($raw_mime) > (int) $rc->config->get('scheduled_sending_max_message_size', 8388608)) {
+            $rc->output->command('display_message', 'Diese Nachricht ist für den geplanten Versand zu groß (maximal 8 MiB einschließlich Anhängen und Kodierung).', 'error');
+            $rc->output->send();
+            return;
+        }
 
-        // Save a Draft copy
+        $dedupe_key = hash('sha256', $user_id . ':' . $request_id);
+        $meta['_schedule_nonce'] = bin2hex(random_bytes(16));
+        if (!$db->startTransaction()) { $this->ss_queue_error('queue_change_failed'); return; }
         try {
-            $sentmb = $rc->config->get('sent_mbox', 'Sent');
+            $q = "INSERT INTO $table (user_id, identity_id, scheduled_at, status, raw_mime, meta_json, dedupe_key, created_at, updated_at)
+                  VALUES (?, ?, ?, 'queued', ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+                  ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)";
+            $ok = $db->query($q, $user_id, $identity_id, $scheduled_at, $raw_mime, json_encode($meta), $dedupe_key);
+            if (!$ok || $db->is_error()) throw new RuntimeException('Queue insert failed');
+            $read = $db->query("SELECT id, meta_json FROM $table WHERE dedupe_key=? AND user_id=? LIMIT 1", $dedupe_key, $user_id);
+            $job = $read && !$db->is_error() ? $db->fetch_assoc($read) : false;
+            if (!$job) throw new RuntimeException('Queue confirmation failed');
+            $job_id = (int) $job['id'];
+            $stored_meta = json_decode($job['meta_json'], true);
+            if (($stored_meta['_schedule_nonce'] ?? '') !== $meta['_schedule_nonce']) {
+                if (!$db->endTransaction()) throw new RuntimeException('Queue commit failed');
+                $rc->output->command('display_message', $this->gettext('already_scheduled'), 'confirmation');
+                $rc->output->command('plugin.scheduled_sending.scheduled', ['id' => $job_id]);
+                $rc->output->send();
+                return;
+            }
+        } catch (Throwable $e) {
+            try { $db->rollbackTransaction(); } catch (Throwable $ignored) {}
+            $this->ss_queue_error('queue_change_failed');
+            return;
+        }
+
+        // Save a real Draft copy; Sent is populated only after SMTP accepts the message.
+        try {
+            $sentmb = $rc->config->get('drafts_mbox', 'Drafts');
             if ($sentmb) {
                 $storage = $rc->get_storage();
                 if (!$storage->folder_exists($sentmb)) {
@@ -1546,15 +1270,33 @@ class scheduled_sending extends rcube_plugin
                 }
                 $saved = $storage->save_message($sentmb, $raw_mime, null, false, array('SEEN'));
                 $this->ss_debug(array('msg'=>'initial saved to sent','ok'=>(bool)$saved,'folder'=>$sentmb));
-                $meta['initial_saved_in'] = 'Sent';
+                $meta['drafts_mbox'] = $sentmb;
                 if ($saved && isset($job_id) && $job_id) {
                     if (!is_array($meta)) { $meta = array(); }
                     $meta['draft_uid'] = $saved;
-                    $db->query("UPDATE $table SET meta_json=? WHERE id=?", json_encode($meta), (int)$job_id);
+                    $updated = $db->query("UPDATE $table SET meta_json=? WHERE id=? AND user_id=?", json_encode($meta), (int)$job_id, $user_id);
+                    if (!$updated || $db->is_error()) throw new RuntimeException('Draft metadata update failed');
+                    if (!empty($draft_uid_post) && (int) $draft_uid_post !== (int) $saved) {
+                        $storage->delete_message((int) $draft_uid_post, $sentmb);
+                    }
                 }
             }
-        } catch (Exception $e) {
-            $this->ss_debug(array('msg'=>'draft save error','err'=>$e->getMessage()));
+        } catch (Throwable $e) {
+            // The MIME in the queue is authoritative; a missing optional Draft
+            // copy must not discard the message. Database failures still roll back.
+            if ($db->is_error()) {
+                $db->rollbackTransaction();
+                $this->ss_queue_error('queue_change_failed');
+                return;
+            }
+            $this->ss_debug(['msg' => 'draft save failed']);
+        }
+        try {
+            if (!$db->endTransaction()) throw new RuntimeException('Queue commit failed');
+        } catch (Throwable $e) {
+            try { $db->rollbackTransaction(); } catch (Throwable $ignored) {}
+            $this->ss_queue_error('queue_change_failed');
+            return;
         }
 
         $this->log('queue insert', array('ok'=>(bool)$ok, 'scheduled_at'=>$scheduled_at, 'framed'=>(int)$rc->output->framed, 'identity_id'=>$identity_id));
@@ -1567,7 +1309,8 @@ class scheduled_sending extends rcube_plugin
             $local_epoch = $epoch;
             if ($offmin) { $local_epoch = $epoch - ($offmin * 60); }
             $local_text = date('M j, Y g:i A', $local_epoch);
-            $rc->output->command('display_message', 'Scheduled for ' . $local_text, 'confirmation');
+            $rc->output->command('display_message', 'Geplant für ' . $this->_ss_format_scheduled_at_for_display($scheduled_at), 'confirmation');
+            $rc->output->command('plugin.scheduled_sending.scheduled', array('id' => (int) $job_id));
         } else {
             $rc->output->command('display_message', 'Unable to schedule (DB)', 'error');
         }
@@ -1599,199 +1342,7 @@ class scheduled_sending extends rcube_plugin
      */
     public function action_send_due()
     {
-        $rc = $this->rc;
-        $cfg = $rc->config;
-
-        $token = rcube_utils::get_input_value('_token', rcube_utils::INPUT_GPC);
-        $need  = $cfg->get('scheduled_sending_worker_token', null);
-        if (!$need || !$token || !hash_equals((string)$need, (string)$token)) {
-            $this->ss_debug(array('msg'=>'send_due denied','time'=>date('c'),'remote'=>$_SERVER['REMOTE_ADDR'] ?? ''));
-            header('HTTP/1.1 403 Forbidden'); echo 'forbidden'; exit;
-        }
-
-        $db    = $rc->get_dbh();
-        $table = $cfg->get('db_table_scheduled_sending', 'scheduled_sending_queue');
-        $batch = (int)$cfg->get('scheduled_sending_batch', 25);
-        if ($batch < 1) $batch = 25;
-        $delivery = $cfg->get('scheduled_sending_delivery', 'smtp'); // 'smtp', 'mail', or 'none' (dry-run)
-
-        $sel = $db->query(
-            "SELECT id,user_id,identity_id,scheduled_at,raw_mime,meta_json,status FROM $table WHERE status='queued' AND scheduled_at <= ? ORDER BY scheduled_at ASC LIMIT $batch",
-            gmdate('Y-m-d H:i:s')
-        );
-
-        $rows = array();
-        while ($sel && ($r = $db->fetch_assoc($sel))) $rows[] = $r;
-        $this->ss_debug(array('msg'=>'worker scan','time'=>date('c'),'count'=>count($rows)));
-
-        $sent_ok = 0;
-        foreach ($rows as $row) {
-            $id  = (int)$row['id'];
-            $raw = (string)$row['raw_mime'];
-            $meta = array();
-            if (!empty($row['meta_json'])) {
-                $tmp = json_decode($row['meta_json'], true);
-                if (is_array($tmp)) $meta = $tmp;
-            }
-            if ($raw === '') {
-                $db->query("UPDATE $table SET status = 'error', updated_at = NOW() WHERE id = ?", $id);
-                $this->ss_debug(array('msg'=>'empty raw_mime','id'=>$id));
-                continue;
-            }
-
-            $hdrs  = $this->ss_parse_headers($raw);
-            list($headers_arr, $raw_body) = $this->_ss_split_raw_message($raw);
-            $from  = isset($hdrs['from']) ? $hdrs['from'] : '';
-            if ($from === '' && !empty($meta['from'])) {
-                $from = (string) $meta['from'];
-                $headers_arr['From'] = $from;
-                $raw = $this->_ss_ensure_from_header($raw, $from);
-            }
-            $to    = isset($hdrs['to']) ? $hdrs['to'] : '';
-            $cc    = isset($hdrs['cc']) ? $hdrs['cc'] : '';
-            $bcc   = isset($hdrs['bcc']) ? $hdrs['bcc'] : '';
-            $subj  = isset($hdrs['subject']) ? $hdrs['subject'] : '';
-            $msgid = isset($hdrs['message-id']) ? $hdrs['message-id'] : '';
-
-            $ok = false;
-            $send_error = '';
-            if ($delivery === 'smtp') {
-                $err = '';
-                $rcpts = array();
-                foreach (array($to, $cc, $bcc, isset($meta['to']) ? $meta['to'] : '', isset($meta['cc']) ? $meta['cc'] : '', isset($meta['bcc']) ? $meta['bcc'] : '') as $list) {
-                    if (!$list) continue;
-                    foreach (preg_split('/\s*,\s*/', $list) as $addr) {
-                        $addr = trim($addr);
-                        if ($addr === '') continue;
-                        if (preg_match('/<([^>]+)>/', $addr, $m)) $addr = $m[1];
-                        if (filter_var($addr, FILTER_VALIDATE_EMAIL)) $rcpts[] = $addr;
-                    }
-                }
-                $rcpts = array_values(array_unique($rcpts));
-
-                $env_from = '';
-                if ($from && preg_match('/<([^>]+)>/', $from, $m)) {
-                    $env_from = $m[1];
-                } elseif ($from && filter_var($from, FILTER_VALIDATE_EMAIL)) {
-                    $env_from = $from;
-                }
-
-                if (!isset($headers_arr['Date'])) {
-                    $headers_arr['Date'] = gmdate('D, d M Y H:i:s') . ' +0000';
-                }
-                if (!isset($headers_arr['Message-ID']) && $env_from) {
-                    $domain = substr(strrchr($env_from, '@'), 1);
-                    $headers_arr['Message-ID'] = '<ss-' . bin2hex(random_bytes(8)) . '@' . ($domain ?: 'localhost') . '>';
-                }
-                foreach (array_keys($headers_arr) as $hname) {
-                    if (strcasecmp($hname, 'Bcc') === 0) unset($headers_arr[$hname]);
-                }
-
-                try {
-                    if (!class_exists('rcube_smtp')) {
-                        $err = 'rcube_smtp unavailable';
-                    } elseif (empty($rcpts)) {
-                        $err = 'no recipients found';
-                    } elseif ($env_from === '') {
-                        $err = 'no envelope sender';
-                    } else {
-                        $restore = $this->_ss_apply_smtp_credentials($meta);
-                        $smtp = new rcube_smtp($rc->config);
-                        if (method_exists($smtp, 'send_mail')) {
-                            $ok = $smtp->send_mail($env_from, $rcpts, $headers_arr, $raw_body);
-                        } elseif (method_exists($smtp, 'send_message')) {
-                            $wire_raw = $this->_ss_headers_to_raw($headers_arr, $raw_body);
-                            $ok = $smtp->send_message($env_from, $rcpts, $wire_raw);
-                        } else {
-                            $err = 'rcube_smtp: no send_* method';
-                        }
-                        if (!$ok && method_exists($smtp, 'get_error')) {
-                            $smtp_err = $smtp->get_error();
-                            if ($smtp_err) $err = json_encode($smtp_err);
-                        }
-                        $this->_ss_restore_config_values($restore);
-                    }
-                } catch (Exception $e) {
-                    $ok = false;
-                    $err = $e->getMessage();
-                    if (isset($restore)) $this->_ss_restore_config_values($restore);
-                }
-
-                if (!$ok && $err === '') $err = 'smtp send returned false';
-                $send_error = $err;
-                $this->ss_debug(array('msg'=>'worker smtp','id'=>$id,'ok'=>(bool)$ok,'rcpts'=>count($rcpts),'err'=>$err));
-            } elseif ($delivery === 'mail') {
-                // Split raw into header/body at first blank line
-                $parts = preg_split("/\\r?\\n\\r?\\n/", $raw, 2);
-                $hdrblock = $parts[0];
-                $body = isset($parts[1]) ? $parts[1] : '';
-
-                // Build recipients
-                $rcpts = trim(implode(', ', array_filter(array($to, $cc, $bcc))));
-                // Remove To/Subject headers from hdrblock to avoid duplication
-                $hdrblock = preg_replace('/^(Subject|To):.*\\r?\\n/im', '', $hdrblock);
-
-                $params = '';
-                if ($from && preg_match('/<([^>]+)>/', $from, $m)) {
-                    $params = '-f ' . escapeshellarg($m[1]);
-                }
-
-                $ok = @mail($rcpts, $subj, $body, $hdrblock, $params);
-                if (!$ok) $send_error = 'mail() returned false';
-                $this->ss_debug(array('msg'=>'worker mail()','id'=>$id,'ok'=>(bool)$ok,'rcpts'=>$rcpts));
-            } else {
-                // dry-run
-                $ok = true;
-                $this->ss_debug(array('msg'=>'worker dry-run','id'=>$id));
-            }
-
-            
-            if ($ok) {
-                // Best-effort: append to Sent and remove matching Draft by Message-ID
-                try {
-                    $storage = $rc->get_storage();
-
-                    // Sent folder: prefer Roundcube's 'sent_mbox', fallback to plugin config
-                    $sentmb = $cfg->get('sent_mbox', $cfg->get('scheduled_sending_sent_folder', 'Sent'));
-                    if (!empty($sentmb)) {
-                        if (!$storage->folder_exists($sentmb)) {
-                            $storage->create_folder($sentmb, true);
-                        }
-                        $storage->save_message($sentmb, $raw);
-                    }
-
-                    // Delete the original draft by Message-ID
-                    $drafts = $cfg->get('drafts_mbox', 'Drafts');
-                    if (!empty($drafts)) {
-                        $draft_uid = null;
-                        if (isset($meta) && is_array($meta) && !empty($meta['draft_uid'])) {
-                            $draft_uid = (int)$meta['draft_uid'];
-                        }
-                        if ($draft_uid) {
-                            $storage->delete_message($draft_uid, $drafts);
-                        } else if (!empty($msgid)) {
-                            $index = $storage->search($drafts, 'HEADER', array('Message-ID' => $msgid));
-                            if ($index && !empty($index->count)) {
-                                foreach ($index->get() as $msg) {
-                                    $storage->delete_message($msg->uid, $drafts);
-                                }
-                            }
-                        }
-                    }
-                    $db->query("UPDATE $table SET status = 'sent', raw_mime = NULL, updated_at = NOW() WHERE id = ?", $id);
-                    $sent_ok++;
-                } catch (\Exception $e) {
-                    $this->ss_debug(array('msg'=>'worker imap err','err'=>$e->getMessage()));
-                }
-            }
-		else {
-                $db->query("UPDATE $table SET status = 'error', last_error = ?, updated_at = NOW() WHERE id = ?", $send_error, $id);
-            }
-        }
-
-        header('Content-Type: text/plain; charset=UTF-8');
-        echo "ok sent=$sent_ok total=".count($rows);
-        exit;
+        $this->action_worker();
     }
 
     private function ss_parse_headers($raw)
@@ -1844,23 +1395,9 @@ class scheduled_sending extends rcube_plugin
 
     public function action_worker()
     {
-        $rc = $this->rc;
-        $token = rcube_utils::get_input_value('_token', rcube_utils::INPUT_GPC);
-        $cfg_token = $rc->config->get('scheduled_sending_worker_token', '');
-        if (!$token || !$cfg_token || !hash_equals($cfg_token, $token)) {
-            header('Content-Type: application/json', true, 403);
-            echo json_encode(array('ok'=>false, 'error'=>'forbidden'));
-            exit;
-        }
-        try {
-            $res = $this->run_send_due_worker();
-            if (!is_array($res)) $res = array('ok'=>true,'note'=>'worker executed');
-            header('Content-Type: application/json');
-            echo json_encode($res);
-        } catch (Exception $e) {
-            header('Content-Type: application/json', true, 500);
-            echo json_encode(array('ok'=>false, 'error'=>$e->getMessage()));
-        }
+        // Delivery is restricted to the local CLI worker. No public delivery endpoint.
+        header('Content-Type: application/json', true, 403);
+        echo json_encode(array('ok' => false, 'error' => 'CLI worker only'));
         exit;
     }
 
@@ -1896,13 +1433,14 @@ class scheduled_sending extends rcube_plugin
             $table->add_header(array('width' => '6%',  'align' => 'left', 'class' => 'delete'), $this->gettext('delete'));
 
             $db = $this->rc->get_dbh();
-            $table_name = $this->rc->config->get('scheduled_sending_table', 'scheduled_queue');
+            $table_name = $this->ss_queue_table();
             $user_id = $this->rc->user->ID;
 
-            $sql = "SELECT id, scheduled_at, meta_json, status, created_at FROM {$table_name} ".
-                   "WHERE user_id = ? AND status NOT IN ('sent', 'cancelled') ORDER BY scheduled_at ASC";
+            $sql = "SELECT id, scheduled_at, meta_json, status, last_error, created_at FROM {$table_name} ".
+                   "WHERE user_id = ? AND status NOT IN ('sent', 'cancelled', 'canceled') ORDER BY scheduled_at ASC";
             $res = $db->query($sql, $user_id);
 
+            if (!$res || $db->is_error()) { $this->ss_queue_error('queue_read_failed'); return $args; }
             while ($row = $db->fetch_assoc($res)) {
                 $meta = json_decode($row['meta_json'], true);
                 $to = isset($meta['to']) ? rcube::Q($meta['to']) : '';
@@ -1914,10 +1452,12 @@ class scheduled_sending extends rcube_plugin
                 $table->add(array('class' => 'scheduled_at'), rcube::Q($scheduled_display));
                 $table->add(array('class' => 'subject'), $subject);
                 $table->add(array('class' => 'to'), $to);
-                $table->add(array('class' => 'status'), rcube::Q($row['status']));
+                $status = rcube::Q($this->gettext('status_' . $row['status']));
+                if (!empty($row['last_error'])) $status .= '<br><small>' . rcube::Q($row['last_error']) . '</small>';
+                $table->add(array('class' => 'status'), $status);
                 $table->add(array('class' => 'created_at'), rcube::Q($row['created_at']));
 
-                $scheduled_ts = (int) strtotime($row['scheduled_at']);
+                $scheduled_ts = (int) strtotime($row['scheduled_at'] . ' UTC');
 
                 // Resolve plugin skin asset for *any* active skin, then fall back safely.
                 $skin = (string) $this->rc->config->get('skin', 'default');
@@ -1942,6 +1482,8 @@ class scheduled_sending extends rcube_plugin
 
                 $edit_button = '<a href="#" class="edit-scheduled-message" data-id="' . rcube::Q($row['id']) . '" data-ts="' . $scheduled_ts . '">' . rcube::Q($this->gettext('edit')) . '</a>';
 
+                if (!in_array($row['status'], ['queued', 'retry_wait'], true)) $edit_button = '';
+                if (in_array($row['status'], ['processing', 'sent', 'sent_copy_error'], true)) $delete_button = '';
                 $table->add(array('class' => 'edit'), $edit_button);
                 $table->add(array('class' => 'delete'), $delete_button);
             }
