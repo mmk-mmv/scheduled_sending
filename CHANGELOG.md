@@ -2,6 +2,10 @@
 
 All notable changes to `scheduled_sending` should be documented in this file.
 
+## [1.4.0-beta.2] - 2026-10-23
+
+- Default the compose send time to the next local calendar day at 08:00, including across daylight-saving changes. Preserve a date/time already selected by the user.
+
 ## [1.4.0-beta.1] - 2026-10-23
 
 Maintained fork preview; original upstream history is preserved.

@@ -60,7 +60,10 @@ function __ss_collect_attachment_meta(target){
     function t(key) { return (window.rcmail && rcmail.gettext) ? rcmail.gettext(key, 'scheduled_sending') : key; }
     var whenInput = document.getElementById('ss-when');
     if (whenInput && !whenInput.value) {
-      var initial = new Date(Date.now() + 30 * 60000);
+      var initial = new Date();
+      // Use the next local calendar day, including across daylight-saving changes.
+      initial.setDate(initial.getDate() + 1);
+      initial.setHours(8, 0, 0, 0);
       function pad(n) { return String(n).padStart(2, '0'); }
       whenInput.value = initial.getFullYear() + '-' + pad(initial.getMonth()+1) + '-' + pad(initial.getDate()) + 'T' + pad(initial.getHours()) + ':' + pad(initial.getMinutes());
     }

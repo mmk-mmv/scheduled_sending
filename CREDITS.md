@@ -5,7 +5,7 @@
 - **damkh**: reviewed queue-navigation/badge, preview, MIME/recipient/date and user-documentation work. This fork independently implements queue navigation/badge with owner-scoped operations and attachment-only EML inspection; it does not merge the alternate worker or mutation handlers.
 - **MiMoHo**: reviewed TLS verification and header-based HTTP worker token fix. This fork removes the HTTP-worker dependency entirely.
 - **facoltativos**: reviewed MIME newline, actual sending-date and compose-layout improvements, covered by this implementation's MIME/Date handling.
-- **Carabas**: reviewed shorter default scheduling suggestion; retained a 30-minute initial suggestion here.
+- **Carabas**: reviewed shorter default scheduling suggestion; this fork uses the next local calendar day at 08:00 since 1.4.0-beta.2.
 - **B0F1B0, koenr, firstred, poremland**: reviewed fork heads; no commits unique to those forks relative to current upstream.
 - **Roundcube contributors**: official parser/input libraries used in tests; source is downloaded separately from a pinned official commit, not vendored into this plugin.
 
