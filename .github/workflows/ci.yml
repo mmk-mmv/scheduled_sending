@@ -44,7 +44,10 @@ jobs:
         env:
           ROUNDCUBE_CORE: ${{ github.workspace }}/.cache/roundcube
           TEST_MYSQL_DSN: mysql:host=127.0.0.1;port=3306;dbname=scheduled_sending_test
-        run: php tests/test_database.php
+        run: |
+          php tests/test_database.php
+          php tests/test_unicode.php
+          python3 tests/test_unicode_mime.py
       - name: Browser behavior and escaping regressions
         run: |
           node tests/test_compose.js

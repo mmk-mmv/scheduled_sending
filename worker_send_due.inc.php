@@ -137,6 +137,7 @@ trait scheduled_sending_worker_trait
                         $domain = substr(strrchr($from[0], '@'), 1);
                         $headers['Message-ID'] = '<ss-' . $id . '-' . substr(hash('sha256', $row['raw_mime']), 0, 24) . '@' . $domain . '>';
                     }
+                    $headers = $this->ss_encode_headers($headers);
                     if (!$copy_only) {
                         $smtp = new rcube_smtp();
                         $timeout = $rc->config->get('smtp_timeout');
@@ -163,7 +164,7 @@ trait scheduled_sending_worker_trait
                             $rc->config->set('smtp_timeout', $timeout);
                         }
                     } else {
-                        $raw = $row['raw_mime'];
+                        $raw = $this->ss_encode_message_headers($row['raw_mime']);
                     }
                     $this->mm_save_sent($meta, $raw);
                     $db->query("UPDATE $table SET status='sent', raw_mime=NULL, meta_json=?, last_error=NULL, updated_at=UTC_TIMESTAMP() WHERE id=?", $this->mm_clean_credentials($meta), $id);

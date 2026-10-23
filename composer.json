@@ -24,7 +24,8 @@
     "ext-json": "*",
     "ext-openssl": "*",
     "ext-mbstring": "*",
-    "ext-pdo": "*"
+    "ext-pdo": "*",
+    "pear/mail_mime": "^1.10"
   },
   "extra": {
     "roundcube": {

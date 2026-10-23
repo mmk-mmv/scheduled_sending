@@ -18,6 +18,11 @@ class ScheduleTestDB extends TestDB {
                 'scheduled_at' => $scheduled_at, 'status' => 'queued', 'raw_mime' => $raw, 'meta_json' => $meta, 'dedupe_key' => $dedupe];
             return new TestRows([]);
         }
+        if (str_starts_with($sql, 'UPDATE') && str_contains($sql, 'SET meta_json=?')) {
+            [$meta, $id, $user] = $args;
+            if ($this->rows[$id]['user_id'] === $user) $this->rows[$id]['meta_json'] = $meta;
+            return new TestRows([]);
+        }
         if (str_starts_with($sql, 'SELECT id, meta_json')) {
             return new TestRows(array_values(array_filter($this->rows, fn($r) => $r['dedupe_key'] === $args[0] && $r['user_id'] === $args[1])));
         }

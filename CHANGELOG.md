@@ -2,6 +2,13 @@
 
 All notable changes to `scheduled_sending` should be documented in this file.
 
+## [1.4.0-beta.3] - 2026-10-23
+
+- Encode UTF-8 subjects/display names as RFC2047 and attachment filenames as RFC2231; use quoted-printable for newly generated plain text/HTML.
+- Normalize legacy queued UTF-8 headers at normal delivery without changing schedule, body or attachment bytes; leave already encoded MIME intact.
+- Preserve Bcc in the saved Draft while stripping it from SMTP/Sent output.
+- Add real encoder/decoder and independent Python MIME round-trip regressions for umlauts, ß, emoji, long subjects, text/HTML, filenames and binary content. Make assertion failures exit nonzero despite Roundcube's generic fatal-page shutdown handler.
+
 ## [1.4.0-beta.2] - 2026-10-23
 
 - Default the compose send time to the next local calendar day at 08:00, including across daylight-saving changes. Preserve a date/time already selected by the user.

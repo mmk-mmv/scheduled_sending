@@ -4,11 +4,12 @@
 
 A maintained GPL-3.0 fork of [Gene Hawkins / texxasrulez's Scheduled Sending](https://github.com/texxasrulez/scheduled_sending). Schedule mail in Roundcube, then let a local CLI worker deliver it after the browser has closed.
 
-**1.4.0-beta.2 — preview release.** This fork changes delivery, credentials, queue actions and compose submission. Review the upgrade notes before deploying. Automated tests use transport doubles; they do not establish compatibility with every mail server, attachment plugin or custom skin.
+**1.4.0-beta.3 — preview release.** This fork changes delivery, credentials, queue actions and compose submission. Review the upgrade notes before deploying. Automated tests use transport doubles; they do not establish compatibility with every mail server, attachment plugin or custom skin.
 
 ## What changed
 
 - Authenticated SMTP connection and captured, encrypted per-account SMTP/IMAP credentials, independent of the web session. No PHP `mail()` fallback or public HTTP worker.
+- UTF-8 MIME headers for subjects and display names, transport-safe text/HTML and RFC2231 attachment filenames. Existing queued UTF-8 headers are normalized at their normal send time; message bodies are preserved.
 - Named/multiple recipients, quoted commas, Unicode display names, To/Cc/Bcc and Cc-only/Bcc-only messages. Bcc stays out of transmitted headers.
 - Compose body and attachments belong to the selected compose context. Missing attachments and oversized messages fail before scheduling.
 - One transaction and a unique request key prevent duplicate scheduling when a slow browser request is retried. The original request wins; a retry cannot overwrite it.
@@ -66,12 +67,14 @@ The queue page uses browser-local time. Preferences and confirmation messages us
 ```sh
 tests/fetch_roundcube.sh
 ROUNDCUBE_CORE="$PWD/.cache/roundcube" php tests/test_reliability.php
+ROUNDCUBE_CORE="$PWD/.cache/roundcube" php tests/test_unicode.php
+python3 tests/test_unicode_mime.py
 node tests/test_compose.js
 node tests/test_settings_queue.js
 node tests/test_queue.js
 ```
 
-The fetch script pins the official Roundcube commit and verifies its archive SHA-256. Test SMTP/IMAP classes are local doubles; no production configuration or mailbox is bootstrapped. For real SQL ownership/transaction tests, use a disposable database named **exactly `scheduled_sending_test`**:
+The fetch script pins the official Roundcube commit and PEAR Mail_Mime 1.10.13, verifying both archive SHA-256 hashes. Unicode tests encode real synthetic MIME and decode it with Roundcube and the independent Python standard email parser. Test SMTP/IMAP classes are local doubles; no production configuration or mailbox is bootstrapped. For real SQL ownership/transaction tests, use a disposable database named **exactly `scheduled_sending_test`**:
 
 ```sh
 ROUNDCUBE_CORE="$PWD/.cache/roundcube" \

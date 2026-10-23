@@ -10,6 +10,8 @@ class rcube extends rcmail {}
 if (getenv('ROUNDCUBE_CORE')) {
     define('INSTALL_PATH', rtrim(getenv('ROUNDCUBE_CORE'), '/') . '/');
     require INSTALL_PATH . 'program/include/iniset.php';
+    set_exception_handler(static function ($error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); });
+    set_error_handler(static function ($severity, $message, $file, $line) { if (!(error_reporting() & $severity)) return false; throw new ErrorException($message, 0, $severity, $file, $line); });
     $_SERVER['HTTP_HOST'] = 'webmail.example.org';
 } else {
 class rcube_utils {
@@ -79,9 +81,10 @@ class TestUser {
     }
 }
 class TestRC {
-    public $config, $db, $user, $output, $request_valid = true;
+    public $config, $db, $user, $output, $storage, $request_valid = true;
     public function __construct() { $this->config = new TestConfig; $this->db = new TestDB; $this->user = new TestUser; $this->output = new TestOutput; }
     public function get_dbh() { return $this->db; }
+    public function get_storage() { return $this->storage; }
     public function check_request() { return $this->request_valid; }
     public function get_user_name() { return 'fixture@example.org'; }
     public function get_user_password() { return 'test-password-only'; }

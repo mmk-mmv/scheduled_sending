@@ -2,13 +2,14 @@
 // Modified by Scheduled Sending contributors, 2026-10-23. GPL-3.0; see LICENSE and CREDITS.md.
 require_once __DIR__ . '/worker_send_due.inc.php';
 require_once __DIR__ . '/queue.inc.php';
+require_once __DIR__ . '/mime.inc.php';
 /**
  * Roundcube Scheduled Sending - clean rebuild (hotfix16b)
  * Compatible with Roundcube 1.6.x
  */
 class scheduled_sending extends rcube_plugin
 {
-    const PLUGIN_VERSION = '1.4.0-beta.2';
+    const PLUGIN_VERSION = '1.4.0-beta.3';
     const PLUGIN_INFO = array(
         'name' => 'scheduled_sending',
         'vendor' => 'Gene Hawkins',
@@ -85,7 +86,7 @@ class scheduled_sending extends rcube_plugin
         return trim($s);
     }
 
-    use scheduled_sending_worker_trait, scheduled_sending_queue_trait;
+    use scheduled_sending_worker_trait, scheduled_sending_queue_trait, scheduled_sending_mime_trait;
     public $task = 'login|mail|settings|addressbook';
     private $rc;
     private $logname = 'scheduled_sending';
@@ -425,11 +426,11 @@ class scheduled_sending extends rcube_plugin
         return array($headers, $body, $raw_headers);
     }
 
-    private function _ss_headers_to_raw($headers, $body)
+    private function _ss_headers_to_raw($headers, $body, $include_bcc = false)
     {
         $lines = array();
         foreach ((array) $headers as $key => $value) {
-            if (strcasecmp((string) $key, 'Bcc') === 0) continue;
+            if (!$include_bcc && strcasecmp((string) $key, 'Bcc') === 0) continue;
             $lines[] = $key . ': ' . $value;
         }
 
@@ -758,8 +759,8 @@ class scheduled_sending extends rcube_plugin
 
             $body_part  = '--' . $boundary . $nl;
             $body_part .= ($is_html ? 'Content-Type: text/html; charset=UTF-8' : 'Content-Type: text/plain; charset=UTF-8') . $nl;
-            $body_part .= 'Content-Transfer-Encoding: 8bit' . $nl . $nl;
-            $body_part .= (string)$body . $nl;
+            $body_part .= 'Content-Transfer-Encoding: quoted-printable' . $nl . $nl;
+            $body_part .= quoted_printable_encode((string)$body) . $nl;
 
             $att_parts = '';
             foreach ($attachments as $k=>$a) {
@@ -774,14 +775,7 @@ class scheduled_sending extends rcube_plugin
                 }
                 if ($data === false || $data === null) continue;
                 if ($data === '' && $data !== '0') continue;
-                $b64 = rtrim(chunk_split(base64_encode($data)));
-                $fname = addcslashes($a['name'], '\"\\');
-                $ctype = $a['type'] ?: 'application/octet-stream';
-                $att_parts .= '--' . $boundary . $nl
-                    . 'Content-Type: ' . $ctype . '; name="' . $fname . '"' . $nl
-                    . 'Content-Transfer-Encoding: base64' . $nl
-                    . 'Content-Disposition: attachment; filename="' . $fname . '"' . $nl . $nl
-                    . $b64 . $nl;
+                $att_parts .= '--' . $boundary . $nl . $this->ss_attachment_part($data, $a['name'], $a['type']);
             }
             $closing = '--' . $boundary . '--' . $nl;
 
@@ -817,20 +811,15 @@ class scheduled_sending extends rcube_plugin
 
             $body_part  = '--' . $boundary . $nl;
             $body_part .= ($is_html ? 'Content-Type: text/html; charset=UTF-8' : 'Content-Type: text/plain; charset=UTF-8') . $nl;
-            $body_part .= 'Content-Transfer-Encoding: 8bit' . $nl . $nl;
-            $body_part .= (string)$body . $nl;
+            $body_part .= 'Content-Transfer-Encoding: quoted-printable' . $nl . $nl;
+            $body_part .= quoted_printable_encode((string)$body) . $nl;
 
             $att_parts = '';
             foreach ($attach_list as $a) {
                 if (!isset($a['content_b64'])) continue;
-                $b64 = preg_replace('/\s+/', '', (string)$a['content_b64']);
-                $fname = isset($a['name']) ? addcslashes($a['name'], '\"\\') : 'file';
-                $ctype = isset($a['type']) && $a['type'] ? $a['type'] : 'application/octet-stream';
-                $att_parts .= '--' . $boundary . $nl
-                    . 'Content-Type: ' . $ctype . '; name="' . $fname . '"' . $nl
-                    . 'Content-Transfer-Encoding: base64' . $nl
-                    . 'Content-Disposition: attachment; filename="' . $fname . '"' . $nl . $nl
-                    . chunk_split($b64) . $nl;
+                $data = base64_decode((string) $a['content_b64'], true);
+                if ($data === false) throw new RuntimeException('Invalid attachment base64');
+                $att_parts .= '--' . $boundary . $nl . $this->ss_attachment_part($data, $a['name'] ?? 'file', $a['type'] ?? 'application/octet-stream');
             }
             $closing = '--' . $boundary . '--' . $nl;
 
@@ -1227,6 +1216,13 @@ class scheduled_sending extends rcube_plugin
             $rc->output->send();
             return;
         }
+        try {
+            $raw_mime = $this->ss_encode_message_headers($raw_mime);
+        } catch (Throwable $e) {
+            $rc->output->command('display_message', 'Planung fehlgeschlagen: Die Zeichenkodierung der Nachricht ist ungültig.', 'error');
+            $rc->output->send();
+            return;
+        }
         if (strlen($raw_mime) > (int) $rc->config->get('scheduled_sending_max_message_size', 8388608)) {
             $rc->output->command('display_message', 'Diese Nachricht ist für den geplanten Versand zu groß (maximal 8 MiB einschließlich Anhängen und Kodierung).', 'error');
             $rc->output->send();
@@ -1324,6 +1320,7 @@ class scheduled_sending extends rcube_plugin
         if ($from)   $headers[] = 'From: ' . $from;
         if ($to)     $headers[] = 'To: ' . $to;
         if ($cc)     $headers[] = 'Cc: ' . $cc;
+        if ($bcc)    $headers[] = 'Bcc: ' . $bcc;
         if ($subject !== '') $headers[] = 'Subject: ' . $subject;
         $headers[] = 'Message-ID: <' . uniqid() . '@localhost>';
         $headers[] = 'MIME-Version: 1.0';
@@ -1332,8 +1329,8 @@ class scheduled_sending extends rcube_plugin
         } else {
             $headers[] = 'Content-Type: text/plain; charset=UTF-8';
         }
-        $headers[] = 'Content-Transfer-Encoding: 8bit';
-        return implode($nl, $headers) . $nl . $nl . (string)$body . $nl;
+        $headers[] = 'Content-Transfer-Encoding: quoted-printable';
+        return implode($nl, $headers) . $nl . $nl . quoted_printable_encode((string)$body) . $nl;
     }
     /**
      * HTTP worker: send all queued messages scheduled at/earlier than now.
