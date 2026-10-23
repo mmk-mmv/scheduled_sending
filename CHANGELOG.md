@@ -2,6 +2,10 @@
 
 All notable changes to `scheduled_sending` should be documented in this file.
 
+## [1.4.0-beta.4] - 2026-10-23
+
+- Default to today at 08:00 before 08:00, otherwise tomorrow at 08:00, in the browser's local timezone. Preserve an existing selection and use calendar days across daylight-saving changes.
+
 ## [1.4.0-beta.3] - 2026-10-23
 
 - Encode UTF-8 subjects/display names as RFC2047 and attachment filenames as RFC2231; use quoted-printable for newly generated plain text/HTML.

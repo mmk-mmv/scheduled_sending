@@ -9,7 +9,7 @@ require_once __DIR__ . '/mime.inc.php';
  */
 class scheduled_sending extends rcube_plugin
 {
-    const PLUGIN_VERSION = '1.4.0-beta.3';
+    const PLUGIN_VERSION = '1.4.0-beta.4';
     const PLUGIN_INFO = array(
         'name' => 'scheduled_sending',
         'vendor' => 'Gene Hawkins',

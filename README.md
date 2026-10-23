@@ -4,7 +4,7 @@
 
 A maintained GPL-3.0 fork of [Gene Hawkins / texxasrulez's Scheduled Sending](https://github.com/texxasrulez/scheduled_sending). Schedule mail in Roundcube, then let a local CLI worker deliver it after the browser has closed.
 
-**1.4.0-beta.3 — preview release.** This fork changes delivery, credentials, queue actions and compose submission. Review the upgrade notes before deploying. Automated tests use transport doubles; they do not establish compatibility with every mail server, attachment plugin or custom skin.
+**1.4.0-beta.4 — preview release.** This fork changes delivery, credentials, queue actions and compose submission. Review the upgrade notes before deploying. Automated tests use transport doubles; they do not establish compatibility with every mail server, attachment plugin or custom skin.
 
 ## What changed
 
@@ -56,7 +56,7 @@ Plesk's bundled Roundcube can load plugins. Keep custom activation in Plesk's su
 
 ## Using the queue
 
-Compose a message: the send time defaults to **tomorrow at 08:00 in your browser's local timezone**. You can change the date and time freely; an existing selection is preserved. Select **Send later** to schedule. The editor stays open on failure and leaves only after the queue transaction is confirmed. A pending request disables the button. Retrying the same compose operation resolves the original job; use a fresh compose operation to schedule an intentionally separate message.
+Compose a message: the send time defaults to **the next 08:00 in your browser's local timezone**: today if it is before 08:00, tomorrow if it is 08:00 or later. You can change the date and time freely; an existing selection is preserved. Select **Send later** to schedule. The editor stays open on failure and leaves only after the queue transaction is confirmed. A pending request disables the button. Retrying the same compose operation resolves the original job; use a fresh compose operation to schedule an intentionally separate message.
 
 Open **Scheduled messages** in the taskbar or Settings. The badge includes queued, retrying, processing and held/problem jobs, not only mail waiting for its time. The queue page lists up to 200 active/problem rows. Cancel or postpone a waiting job; download the queued `.eml` to inspect it locally. Error details explain held jobs. Processing, completed and Sent-copy-recovery jobs cannot be requeued or deleted through these actions; held errors cannot be rescheduled. Cancellation retains the payload until explicitly deleted.
 
